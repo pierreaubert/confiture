@@ -1,0 +1,53 @@
+# Quint configuration for JAM Protocol specification
+
+[project]
+name = "jam-protocol"
+version = "0.1.0"
+description = "JAM Protocol formal specification in Quint"
+
+[verification]
+# Default verification settings
+max-steps = 100
+init = "init"
+step = "step"
+invariant = ["system_invariant"]
+
+[simulation]
+# Simulation settings for random testing
+seed = 12345
+max-runs = 10
+max-steps = 50
+
+[apalache]
+# Settings for Apalache model checker
+length = 20
+init = "init"
+next = "step"
+inv = ["system_invariant"]
+
+[[test]]
+name = "basic_tests"
+file = "confiture_protocol_test.qnt"
+runs = [
+  "deploy_service_test",
+  "purchase_core_time_test",
+  "submit_service_call_test",
+  "block_production_test"
+]
+
+[[test]]
+name = "error_tests"
+file = "confiture_protocol_test.qnt"
+runs = [
+  "deploy_service_insufficient_funds_test",
+  "unauthorized_termination_test",
+  "core_conflict_test"
+]
+
+[[test]]
+name = "property_tests"
+file = "confiture_protocol_test.qnt"
+runs = [
+  "invariant_preservation_test",
+  "balance_conservation_test"
+]
