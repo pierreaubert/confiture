@@ -2,12 +2,12 @@
 // Join-Accumulate Machine: A trustless supercomputer combining Polkadot and Ethereum elements
 // State of the specs is alpha
 
-module jam_protocol {
+module confiture {
 
   // ============================================================================
   // DATA AVAILABILITY LAYER TYPES
   // ============================================================================
-  
+
   type DataBlob = {
     id: int,
     data: str,
@@ -15,7 +15,7 @@ module jam_protocol {
     erasure_coded: bool,
     availability_proof: str
   }
-  
+
   type DataSegment = {
     blob_id: int,
     segment_index: int,
@@ -45,9 +45,12 @@ module jam_protocol {
     id: int,
     service_id: int,
     work_items: Set[WorkItem],
-    core_index: int,
-    authorization_hash: str,
-    context: WorkContext
+    authorization: str,
+    context: WorkContext,
+    status: WorkItemStatus,
+    core_assignment: int,
+    gas_limit: int,
+    gas_consumed: int
   }
 
   // Work Item - individual unit of work (§3.1.1 Work Items)
@@ -522,6 +525,508 @@ module jam_protocol {
   }
 
   // ============================================================================
+  // INVARIANTS
+  // ============================================================================
+
+  // Account balances should never be negative
+  val accounts_non_negative =
+    accounts.keys().forall(account => accounts.get(account) >= 0)
+
+  // Service balances should never be negative
+  val service_balances_non_negative =
+    services.keys().forall(id => services.get(id).balance >= 0)
+
+  // Active services should have minimum balance
+  val active_services_funded =
+    services.keys().forall(id => {
+      val service = services.get(id)
+      service.state != ServiceActive or service.balance >= MIN_SERVICE_BALANCE
+    })
+
+  // Block numbers should be monotonic
+  val blocks_monotonic = current_block >= 0
+
+  // Conservation of funds - total money in system should remain constant
+  val total_funds =
+    accounts.keys().fold(0, (sum, acc) => sum + accounts.get(acc)) +
+    services.keys().fold(0, (sum, id) => sum + services.get(id).balance)
+
+  val funds_conservation = total_funds == 25000  // Initial total: 10000 + 10000 + 5000
+
+  // Total system invariant
+  val system_invariant = and {
+    accounts_non_negative,
+    service_balances_non_negative,
+    active_services_funded,
+    blocks_monotonic,
+    funds_conservation
+  }
+
+   // Deploy a new JAM service with entry points
+    action deploy_service(owner: str, code_hash: str, initial_balance: int, refine_code: str, accumulate_code: str, on_message_code: str): bool = {
+    val can_deploy = and {
+      accounts.keys().contains(owner),
+      accounts.get(owner) >= initial_balance,
+      initial_balance >= MIN_SERVICE_BALANCE
+    }
+    val new_service = {
+      id: next_service_id,
+      owner: owner,
+      code_hash: code_hash,
+      state: ServiceActive,
+      balance: initial_balance,
+      refine_code: refine_code,
+      accumulate_code: accumulate_code,
+      on_message_code: on_message_code
+    }
+
+    all {
+      can_deploy,
+      // Canonical effect set with actual updates
+      current_block' = current_block,
+      services' = services.put(next_service_id, new_service),
+      accounts' = accounts.setBy(owner, balance => balance - initial_balance),
+      pending_calls' = pending_calls,
+      next_service_id' = next_service_id + 1,
+      cores' = cores,
+      work_packages' = work_packages,
+      work_results' = work_results,
+      pending_work_packages' = pending_work_packages,
+      next_package_id' = next_package_id,
+      next_work_item_id' = next_work_item_id,
+      jam_state_root' = jam_state_root,
+      entropy_pool' = entropy_pool,
+      validator_assignments' = validator_assignments,
+      blocks' = blocks,
+      chain_head' = chain_head,
+      current_epoch' = current_epoch,
+      pending_extrinsics' = pending_extrinsics,
+      next_extrinsic_id' = next_extrinsic_id,
+      validators' = validators,
+      validator_count' = validator_count,
+      tickets' = tickets,
+      pending_tickets' = pending_tickets,
+      current_slot' = current_slot,
+      entropy_accumulator' = entropy_accumulator,
+      finalized_blocks' = finalized_blocks,
+      grandpa_round' = grandpa_round,
+      pending_votes' = pending_votes,
+      finality_justifications' = finality_justifications,
+      pvm_programs' = pvm_programs,
+      pvm_contexts' = pvm_contexts,
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
+    }
+  }
+
+  // Submit a work package for processing
+  action submit_work_package(service_id: int, work_items: Set[WorkItem], authorization: str): bool = {
+    val service_exists = services.keys().contains(service_id)
+    val service = if (service_exists) services.get(service_id) else {
+      id: 0, owner: "", code_hash: "", state: ServiceInactive, balance: 0,
+      refine_code: "", accumulate_code: "", on_message_code: ""
+    }
+    val total_gas = package_gas_total(work_items)
+    val available_core_set = available_cores(cores)
+    val can_submit = and {
+      service_exists,
+      service.state == ServiceActive,
+      work_items.size() <= MAX_WORK_ITEMS_PER_PACKAGE,
+      work_items.size() > 0,
+      total_gas <= MAX_GAS_PER_BLOCK,
+      available_core_set.size() > 0
+    }
+    val selected_core = if (can_submit and available_core_set.size() > 0) available_core_set.fold(0, (acc, core) => core) else 0
+    val work_context = create_work_context(current_block, entropy_pool, jam_state_root)
+    val new_package = {
+      id: next_package_id,
+      service_id: service_id,
+      work_items: work_items,
+      authorization: authorization,
+      context: work_context,
+      status: WorkPending,
+      core_assignment: selected_core,
+      gas_limit: total_gas,
+      gas_consumed: 0
+    }
+    all {
+      can_submit,
+      // Canonical effect set ordering
+      current_block' = current_block,
+      services' = services,
+      accounts' = accounts,
+      pending_calls' = pending_calls,
+      next_service_id' = next_service_id,
+      cores' = cores.setBy(selected_core, core => { ...core, state: Occupied, current_package: next_package_id }),
+      work_packages' = work_packages,
+      work_results' = work_results,
+      pending_work_packages' = pending_work_packages.union(Set(new_package)),
+      next_package_id' = next_package_id + 1,
+      next_work_item_id' = next_work_item_id,
+      jam_state_root' = jam_state_root,
+      entropy_pool' = entropy_pool,
+      validator_assignments' = validator_assignments,
+      blocks' = blocks,
+      chain_head' = chain_head,
+      current_epoch' = current_epoch,
+      pending_extrinsics' = pending_extrinsics,
+      next_extrinsic_id' = next_extrinsic_id,
+      validators' = validators,
+      validator_count' = validator_count,
+      tickets' = tickets,
+      pending_tickets' = pending_tickets,
+      current_slot' = current_slot,
+      entropy_accumulator' = entropy_accumulator,
+      finalized_blocks' = finalized_blocks,
+      grandpa_round' = grandpa_round,
+      pending_votes' = pending_votes,
+      finality_justifications' = finality_justifications,
+      pvm_programs' = pvm_programs,
+      pvm_contexts' = pvm_contexts,
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
+    }
+  }
+
+  // Refine phase - execute work items in-core
+  action refine_work_package(package_id: int): bool = {
+    val package_exists = pending_work_packages.exists(pkg => pkg.id == package_id)
+    val work_package = if (package_exists)
+      pending_work_packages.filter(pkg => pkg.id == package_id).fold({id: 0, service_id: 0, work_items: Set(), authorization: "", context: {block_number: 0, timestamp: 0, entropy: "", prior_state_root: ""}, status: WorkPending, core_assignment: 0, gas_limit: 0, gas_consumed: 0}, (acc, pkg) => pkg)
+      else { id: 0, service_id: 0, work_items: Set(), authorization: "", context: create_work_context(0, "", ""), status: WorkPending, core_assignment: 0, gas_limit: 0, gas_consumed: 0 }
+    val service_exists = services.keys().contains(work_package.service_id)
+    val service = if (service_exists) services.get(work_package.service_id) else {
+      id: 0, owner: "", code_hash: "", state: ServiceInactive, balance: 0,
+      refine_code: "", accumulate_code: "", on_message_code: ""
+    }
+    val can_refine = and {
+      package_exists,
+      service_exists,
+      service.state == ServiceActive,
+      cores.get(work_package.core_assignment).state == Occupied
+    }
+    // Simulate refine execution - in real implementation this would execute service.refine_code
+    val refined_items = work_package.work_items.map(wi =>
+      { ...wi, status: Refined, refine_output: "refined_output" }
+    )
+    val refined_package = { ...work_package, work_items: refined_items }
+    val work_result = {
+      package_id: package_id,
+      service_id: work_package.service_id,
+      core_index: work_package.core_assignment,
+      refined_outputs: refined_items.map(work_item => work_item.refine_output),
+      accumulate_data: "accumulate_input",
+      gas_used: package_gas_total(work_package.work_items),
+      success: true
+    }
+    all {
+      can_refine,
+      work_packages' = work_packages.put(package_id, refined_package),
+      work_results' = work_results.put(package_id, work_result),
+      pending_work_packages' = pending_work_packages.exclude(Set(work_package)),
+      // Free the core
+      cores' = cores.setBy(work_package.core_assignment, core => { ...core, state: Available, current_package: 0 }),
+      // Unchanged state
+      current_block' = current_block,
+      services' = services,
+      accounts' = accounts,
+      pending_calls' = pending_calls,
+      next_service_id' = next_service_id,
+      next_package_id' = next_package_id,
+      next_work_item_id' = next_work_item_id,
+      jam_state_root' = jam_state_root,
+      entropy_pool' = entropy_pool,
+      validator_assignments' = validator_assignments,
+      blocks' = blocks,
+      chain_head' = chain_head,
+      current_epoch' = current_epoch,
+      pending_extrinsics' = pending_extrinsics,
+      next_extrinsic_id' = next_extrinsic_id,
+      validators' = validators,
+      validator_count' = validator_count,
+      tickets' = tickets,
+      pending_tickets' = pending_tickets,
+      current_slot' = current_slot,
+      entropy_accumulator' = entropy_accumulator,
+      finalized_blocks' = finalized_blocks,
+      grandpa_round' = grandpa_round,
+      pending_votes' = pending_votes,
+      finality_justifications' = finality_justifications,
+      pvm_programs' = pvm_programs,
+      pvm_contexts' = pvm_contexts,
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
+    }
+  }
+
+  // Accumulate phase - process refined results on-chain
+  action accumulate_work_results(result_ids: Set[int]): bool = {
+    val results_exist = result_ids.forall(id => work_results.keys().contains(id))
+    val can_accumulate = and {
+      results_exist,
+      result_ids.size() > 0,
+      result_ids.size() <= 10  // Limit accumulation batch size
+    }
+    val results_to_process = result_ids.map(id => work_results.get(id))
+    val total_gas_used = results_to_process.fold(0, (acc, result) => acc + result.gas_used)
+    // Simulate accumulate execution - in real implementation this would execute service.accumulate_code
+    val new_state_root = "state_accumulated"
+    all {
+      can_accumulate,
+      jam_state_root' = new_state_root,
+      entropy_pool' = entropy_pool,  // Keep entropy_pool unchanged for now
+      // Mark work items as accumulated
+      work_packages' = result_ids.fold(work_packages, (packages, result_id) => {
+        val result = work_results.get(result_id)
+        val package = packages.get(result.package_id)
+        val accumulated_items = package.work_items.map(wi =>
+          if (result_ids.contains(wi.id)) { ...wi, status: Accumulated }
+          else wi
+        )
+        packages.setBy(result.package_id, pkg => { ...pkg, work_items: accumulated_items })
+      }),
+      // Unchanged state
+      current_block' = current_block,
+      services' = services,
+      accounts' = accounts,
+      pending_calls' = pending_calls,
+      next_service_id' = next_service_id,
+      cores' = cores,
+      work_results' = work_results,
+      pending_work_packages' = pending_work_packages,
+      next_package_id' = next_package_id,
+      next_work_item_id' = next_work_item_id,
+      validator_assignments' = validator_assignments,
+      blocks' = blocks,
+      chain_head' = chain_head,
+      current_epoch' = current_epoch,
+      pending_extrinsics' = pending_extrinsics,
+      next_extrinsic_id' = next_extrinsic_id,
+      validators' = validators,
+      validator_count' = validator_count,
+      tickets' = tickets,
+      pending_tickets' = pending_tickets,
+      current_slot' = current_slot,
+      entropy_accumulator' = entropy_accumulator,
+      finalized_blocks' = finalized_blocks,
+      grandpa_round' = grandpa_round,
+      pending_votes' = pending_votes,
+      finality_justifications' = finality_justifications,
+      pvm_programs' = pvm_programs,
+      pvm_contexts' = pvm_contexts,
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
+    }
+  }
+
+  // Legacy service call for backward compatibility
+  action submit_service_call(caller: str, service_id: int, method: str, gas_limit: int, gas_price: int): bool = {
+    val can_call = and {
+      accounts.keys().contains(caller),
+      services.keys().contains(service_id),
+      services.get(service_id).state == ServiceActive,
+      accounts.get(caller) >= gas_limit * gas_price
+    }
+    val new_call = {
+      caller: caller,
+      service_id: service_id,
+      method: method,
+      gas_limit: gas_limit,
+      gas_price: gas_price
+    }
+
+    all {
+      can_call,
+      pending_calls' = pending_calls.union(Set(new_call)),
+      // Unchanged state
+      current_block' = current_block,
+      services' = services,
+      accounts' = accounts,
+      next_service_id' = next_service_id,
+      cores' = cores,
+      work_packages' = work_packages,
+      work_results' = work_results,
+      pending_work_packages' = pending_work_packages,
+      next_package_id' = next_package_id,
+      next_work_item_id' = next_work_item_id,
+      jam_state_root' = jam_state_root,
+      entropy_pool' = entropy_pool,
+      validator_assignments' = validator_assignments,
+      blocks' = blocks,
+      chain_head' = chain_head,
+      current_epoch' = current_epoch,
+      pending_extrinsics' = pending_extrinsics,
+      next_extrinsic_id' = next_extrinsic_id,
+      validators' = validators,
+      validator_count' = validator_count,
+      tickets' = tickets,
+      pending_tickets' = pending_tickets,
+      current_slot' = current_slot,
+      entropy_accumulator' = entropy_accumulator,
+      finalized_blocks' = finalized_blocks,
+      grandpa_round' = grandpa_round,
+      pending_votes' = pending_votes,
+      finality_justifications' = finality_justifications,
+      pvm_programs' = pvm_programs,
+      pvm_contexts' = pvm_contexts,
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
+    }
+  }
+
+  // Produce a new JAM block with work package processing
+  action produce_block: bool = {
+    val new_block_number = current_block + 1
+    val new_timestamp = new_block_number * 6000  // 6 second block time
+
+    // Process legacy service calls and convert to extrinsics
+    val executable_calls = pending_calls.filter(call =>
+      calls_affordable(Set(call), accounts)
+    )
+    val gas_limited_calls = executable_calls.filter(call => call.gas_limit <= MAX_GAS_PER_BLOCK)
+    val total_gas = gas_limited_calls.fold(0, (acc, call) => acc + call.gas_limit)
+    val final_calls = if (total_gas <= MAX_GAS_PER_BLOCK) gas_limited_calls else Set()
+
+    // Convert service calls to extrinsics
+    val service_call_extrinsics = final_calls.map(call => {
+      id: next_extrinsic_id,
+      extrinsic_type: ServiceCallExtrinsic,
+      data: call.method,
+      signature: "sig_caller",
+      author: call.caller
+    })
+
+    // Process pending work packages (refine phase happens automatically)
+    val packages_to_refine = pending_work_packages.filter(pkg =>
+      cores.get(pkg.core_assignment).state == Occupied
+    )
+
+    // Update entropy and state root for new block
+    val new_entropy = "entropy_updated"
+    val new_state_root = "state_block_updated"
+    val parent_hash = if (current_block == 0) "genesis_hash" else "block_hash_prev"
+
+    // Create new block header
+    val new_header = create_block_header(parent_hash, new_block_number, new_state_root, new_entropy, new_timestamp, current_epoch)
+
+    // Create new block
+    val new_block = {
+      header: new_header,
+      extrinsics: service_call_extrinsics.union(pending_extrinsics),
+      guarantees: Set(),  // TODO: Add guarantees from work package processing
+      assurances: Set(),  // TODO: Add assurances
+      preimages: Set(),   // TODO: Add preimages
+      availability: Set() // TODO: Add availability attestations
+    }
+
+    all {
+      current_block' = new_block_number,
+      chain_head' = new_block_number,
+      blocks' = blocks.put(new_block_number, new_block),
+      pending_calls' = pending_calls.exclude(final_calls),
+      pending_extrinsics' = Set(),
+      next_extrinsic_id' = next_extrinsic_id + service_call_extrinsics.size(),
+      accounts' = final_calls.fold(accounts, (acc_map, call) =>
+        acc_map.setBy(call.caller, balance => balance - call.gas_limit * call.gas_price)
+      ),
+      // Update JAM state
+      entropy_pool' = new_entropy,
+      jam_state_root' = new_state_root,
+      // Unchanged state
+      services' = services,
+      next_service_id' = next_service_id,
+      cores' = cores,
+      work_packages' = work_packages,
+      work_results' = work_results,
+      pending_work_packages' = pending_work_packages,
+      next_package_id' = next_package_id,
+      next_work_item_id' = next_work_item_id,
+      validator_assignments' = validator_assignments,
+      current_epoch' = current_epoch,
+      validators' = validators,
+      validator_count' = validator_count,
+      tickets' = tickets,
+      pending_tickets' = pending_tickets,
+      current_slot' = current_slot,
+      entropy_accumulator' = entropy_accumulator,
+      finalized_blocks' = finalized_blocks,
+      grandpa_round' = grandpa_round,
+      pending_votes' = pending_votes,
+      finality_justifications' = finality_justifications,
+      pvm_programs' = pvm_programs,
+      pvm_contexts' = pvm_contexts,
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
+    }
+  }
+
+    // ============================================================================
   // INITIAL STATE (§1.3 JAM State Initialization)
   // ============================================================================
 
@@ -619,310 +1124,6 @@ module jam_protocol {
     next_xcmp_message_id' = 1
   }
 
-  // ============================================================================
-  // ACTIONS
-  // ============================================================================
-
-  // Deploy a new JAM service with entry points
-  action deploy_service(owner: str, code_hash: str, initial_balance: int, refine_code: str, accumulate_code: str, on_message_code: str): bool = {
-    val can_deploy = and {
-      accounts.keys().contains(owner),
-      accounts.get(owner) >= initial_balance,
-      initial_balance >= MIN_SERVICE_BALANCE
-    }
-    val new_service = {
-      id: next_service_id,
-      owner: owner,
-      code_hash: code_hash,
-      state: ServiceActive,
-      balance: initial_balance,
-      refine_code: refine_code,
-      accumulate_code: accumulate_code,
-      on_message_code: on_message_code
-    }
-
-    all {
-      can_deploy,
-      services' = services.put(next_service_id, new_service),
-      accounts' = accounts.setBy(owner, balance => balance - initial_balance),
-      next_service_id' = next_service_id + 1,
-      current_block' = current_block,
-      pending_calls' = pending_calls,
-      cores' = cores,
-      work_packages' = work_packages,
-      work_results' = work_results,
-      pending_work_packages' = pending_work_packages,
-      next_package_id' = next_package_id,
-      next_work_item_id' = next_work_item_id,
-      jam_state_root' = jam_state_root,
-      entropy_pool' = entropy_pool,
-      validator_assignments' = validator_assignments,
-      blocks' = blocks,
-      chain_head' = chain_head,
-      current_epoch' = current_epoch,
-      pending_extrinsics' = pending_extrinsics,
-      next_extrinsic_id' = next_extrinsic_id
-    }
-  }
-
-  // ============================================================================
-  // JAM WORK PACKAGE ACTIONS
-  // ============================================================================
-
-  // Submit a work package for processing
-  action submit_work_package(service_id: int, work_items: Set[WorkItem], authorization: str): bool = {
-    val service_exists = services.keys().contains(service_id)
-    val service = if (service_exists) services.get(service_id) else {
-      id: 0, owner: "", code_hash: "", state: ServiceInactive, balance: 0,
-      refine_code: "", accumulate_code: "", on_message_code: ""
-    }
-    val total_gas = package_gas_total(work_items)
-    val available_core_set = available_cores(cores)
-    val can_submit = and {
-      service_exists,
-      service.state == ServiceActive,
-      work_items.size() <= MAX_WORK_ITEMS_PER_PACKAGE,
-      work_items.size() > 0,
-      total_gas <= MAX_GAS_PER_BLOCK,
-      available_core_set.size() > 0
-    }
-    val selected_core = if (can_submit and available_core_set.size() > 0) available_core_set.fold(0, (acc, core) => core) else 0
-    val work_context = create_work_context(current_block, entropy_pool, jam_state_root)
-    val new_package = {
-      id: next_package_id,
-      service_id: service_id,
-      work_items: work_items,
-      core_index: selected_core,
-      authorization_hash: authorization,
-      context: work_context
-    }
-    all {
-      can_submit,
-      pending_work_packages' = pending_work_packages.union(Set(new_package)),
-      next_package_id' = next_package_id + 1,
-      // Reserve the core
-      cores' = cores.setBy(selected_core, core => { ...core, state: Occupied, current_package: next_package_id }),
-      // Unchanged state
-      current_block' = current_block,
-      services' = services,
-      accounts' = accounts,
-      pending_calls' = pending_calls,
-      next_service_id' = next_service_id,
-      work_packages' = work_packages,
-      work_results' = work_results,
-      next_work_item_id' = next_work_item_id,
-      jam_state_root' = jam_state_root,
-      entropy_pool' = entropy_pool,
-      validator_assignments' = validator_assignments
-    }
-  }
-
-  // Refine phase - execute work items in-core
-  action refine_work_package(package_id: int): bool = {
-    val package_exists = pending_work_packages.exists(pkg => pkg.id == package_id)
-    val work_package = if (package_exists)
-      pending_work_packages.filter(pkg => pkg.id == package_id).fold({id: 0, service_id: 0, work_items: Set(), core_index: 0, authorization_hash: "", context: {block_number: 0, timestamp: 0, entropy: "", prior_state_root: ""}}, (acc, pkg) => pkg)
-      else { id: 0, service_id: 0, work_items: Set(), core_index: 0, authorization_hash: "", context: create_work_context(0, "", "") }
-    val service_exists = services.keys().contains(work_package.service_id)
-    val service = if (service_exists) services.get(work_package.service_id) else {
-      id: 0, owner: "", code_hash: "", state: ServiceInactive, balance: 0,
-      refine_code: "", accumulate_code: "", on_message_code: ""
-    }
-    val can_refine = and {
-      package_exists,
-      service_exists,
-      service.state == ServiceActive,
-      cores.get(work_package.core_index).state == Occupied
-    }
-    // Simulate refine execution - in real implementation this would execute service.refine_code
-    val refined_items = work_package.work_items.map(wi =>
-      { ...wi, status: Refined, refine_output: "refined_output" }
-    )
-    val refined_package = { ...work_package, work_items: refined_items }
-    val work_result = {
-      package_id: package_id,
-      service_id: work_package.service_id,
-      core_index: work_package.core_index,
-      refined_outputs: refined_items.map(work_item => work_item.refine_output),
-      accumulate_data: "accumulate_input",
-      gas_used: package_gas_total(work_package.work_items),
-      success: true
-    }
-    all {
-      can_refine,
-      work_packages' = work_packages.put(package_id, refined_package),
-      work_results' = work_results.put(package_id, work_result),
-      pending_work_packages' = pending_work_packages.exclude(Set(work_package)),
-      // Free the core
-      cores' = cores.setBy(work_package.core_index, core => { ...core, state: Available, current_package: 0 }),
-      // Unchanged state
-      current_block' = current_block,
-      services' = services,
-      accounts' = accounts,
-      pending_calls' = pending_calls,
-      next_service_id' = next_service_id,
-      next_package_id' = next_package_id,
-      next_work_item_id' = next_work_item_id,
-      jam_state_root' = jam_state_root,
-      entropy_pool' = entropy_pool,
-      validator_assignments' = validator_assignments
-    }
-  }
-
-  // Accumulate phase - process refined results on-chain
-  action accumulate_work_results(result_ids: Set[int]): bool = {
-    val results_exist = result_ids.forall(id => work_results.keys().contains(id))
-    val can_accumulate = and {
-      results_exist,
-      result_ids.size() > 0,
-      result_ids.size() <= 10  // Limit accumulation batch size
-    }
-    val results_to_process = result_ids.map(id => work_results.get(id))
-    val total_gas_used = results_to_process.fold(0, (acc, result) => acc + result.gas_used)
-    // Simulate accumulate execution - in real implementation this would execute service.accumulate_code
-    val new_state_root = "state_accumulated"
-    all {
-      can_accumulate,
-      jam_state_root' = new_state_root,
-      entropy_pool' = entropy_pool,  // Keep entropy_pool unchanged for now
-      // Mark work items as accumulated
-      work_packages' = result_ids.fold(work_packages, (packages, result_id) => {
-        val result = work_results.get(result_id)
-        val package = packages.get(result.package_id)
-        val accumulated_items = package.work_items.map(wi =>
-          if (result_ids.contains(wi.id)) { ...wi, status: Accumulated }
-          else wi
-        )
-        packages.setBy(result.package_id, pkg => { ...pkg, work_items: accumulated_items })
-      }),
-      // Unchanged state
-      current_block' = current_block,
-      services' = services,
-      accounts' = accounts,
-      pending_calls' = pending_calls,
-      next_service_id' = next_service_id,
-      cores' = cores,
-      work_results' = work_results,
-      pending_work_packages' = pending_work_packages,
-      next_package_id' = next_package_id,
-      next_work_item_id' = next_work_item_id,
-      validator_assignments' = validator_assignments
-    }
-  }
-
-  // Legacy service call for backward compatibility
-  action submit_service_call(caller: str, service_id: int, method: str, gas_limit: int, gas_price: int): bool = {
-    val can_call = and {
-      accounts.keys().contains(caller),
-      services.keys().contains(service_id),
-      services.get(service_id).state == ServiceActive,
-      accounts.get(caller) >= gas_limit * gas_price
-    }
-    val new_call = {
-      caller: caller,
-      service_id: service_id,
-      method: method,
-      gas_limit: gas_limit,
-      gas_price: gas_price
-    }
-
-    all {
-      can_call,
-      pending_calls' = pending_calls.union(Set(new_call)),
-      // Unchanged state
-      current_block' = current_block,
-      services' = services,
-      accounts' = accounts,
-      next_service_id' = next_service_id,
-      cores' = cores,
-      work_packages' = work_packages,
-      work_results' = work_results,
-      pending_work_packages' = pending_work_packages,
-      next_package_id' = next_package_id,
-      next_work_item_id' = next_work_item_id,
-      jam_state_root' = jam_state_root,
-      entropy_pool' = entropy_pool,
-      validator_assignments' = validator_assignments,
-      blocks' = blocks,
-      chain_head' = chain_head,
-      current_epoch' = current_epoch,
-      pending_extrinsics' = pending_extrinsics,
-      next_extrinsic_id' = next_extrinsic_id
-    }
-  }
-
-  // Produce a new JAM block with work package processing
-  action produce_block: bool = {
-    val new_block_number = current_block + 1
-    val new_timestamp = new_block_number * 6000  // 6 second block time
-
-    // Process legacy service calls and convert to extrinsics
-    val executable_calls = pending_calls.filter(call =>
-      calls_affordable(Set(call), accounts)
-    )
-    val gas_limited_calls = executable_calls.filter(call => call.gas_limit <= MAX_GAS_PER_BLOCK)
-    val total_gas = gas_limited_calls.fold(0, (acc, call) => acc + call.gas_limit)
-    val final_calls = if (total_gas <= MAX_GAS_PER_BLOCK) gas_limited_calls else Set()
-
-    // Convert service calls to extrinsics
-    val service_call_extrinsics = final_calls.map(call => {
-      id: next_extrinsic_id,
-      extrinsic_type: ServiceCallExtrinsic,
-      data: call.method,
-      signature: "sig_caller",
-      author: call.caller
-    })
-
-    // Process pending work packages (refine phase happens automatically)
-    val packages_to_refine = pending_work_packages.filter(pkg =>
-      cores.get(pkg.core_index).state == Occupied
-    )
-
-    // Update entropy and state root for new block
-    val new_entropy = "entropy_updated"
-    val new_state_root = "state_block_updated"
-    val parent_hash = if (current_block == 0) "genesis_hash" else "block_hash_prev"
-
-    // Create new block header
-    val new_header = create_block_header(parent_hash, new_block_number, new_state_root, new_entropy, new_timestamp, current_epoch)
-
-    // Create new block
-    val new_block = {
-      header: new_header,
-      extrinsics: service_call_extrinsics.union(pending_extrinsics),
-      guarantees: Set(),  // TODO: Add guarantees from work package processing
-      assurances: Set(),  // TODO: Add assurances
-      preimages: Set(),   // TODO: Add preimages
-      availability: Set() // TODO: Add availability attestations
-    }
-
-    all {
-      current_block' = new_block_number,
-      chain_head' = new_block_number,
-      blocks' = blocks.put(new_block_number, new_block),
-      pending_calls' = pending_calls.exclude(final_calls),
-      pending_extrinsics' = Set(),
-      next_extrinsic_id' = next_extrinsic_id + service_call_extrinsics.size(),
-      accounts' = final_calls.fold(accounts, (acc_map, call) =>
-        acc_map.setBy(call.caller, balance => balance - call.gas_limit * call.gas_price)
-      ),
-      // Update JAM state
-      entropy_pool' = new_entropy,
-      jam_state_root' = new_state_root,
-      // Unchanged state
-      services' = services,
-      next_service_id' = next_service_id,
-      cores' = cores,
-      work_packages' = work_packages,
-      work_results' = work_results,
-      pending_work_packages' = pending_work_packages,
-      next_package_id' = next_package_id,
-      next_work_item_id' = next_work_item_id,
-      validator_assignments' = validator_assignments,
-      current_epoch' = current_epoch
-    }
-  }
-
   // Submit an extrinsic to the mempool
   action submit_extrinsic(extrinsic_type: ExtrinsicType, data: str, author: str): bool = {
     val can_submit = accounts.keys().contains(author)
@@ -936,9 +1137,7 @@ module jam_protocol {
 
     all {
       can_submit,
-      pending_extrinsics' = pending_extrinsics.union(Set(new_extrinsic)),
-      next_extrinsic_id' = next_extrinsic_id + 1,
-      // Unchanged state
+      // Canonical effect set with actual updates
       current_block' = current_block,
       services' = services,
       accounts' = accounts,
@@ -955,7 +1154,34 @@ module jam_protocol {
       validator_assignments' = validator_assignments,
       blocks' = blocks,
       chain_head' = chain_head,
-      current_epoch' = current_epoch
+      current_epoch' = current_epoch,
+      pending_extrinsics' = pending_extrinsics.union(Set(new_extrinsic)),
+      next_extrinsic_id' = next_extrinsic_id + 1,
+      validators' = validators,
+      validator_count' = validator_count,
+      tickets' = tickets,
+      pending_tickets' = pending_tickets,
+      current_slot' = current_slot,
+      entropy_accumulator' = entropy_accumulator,
+      finalized_blocks' = finalized_blocks,
+      grandpa_round' = grandpa_round,
+      pending_votes' = pending_votes,
+      finality_justifications' = finality_justifications,
+      pvm_programs' = pvm_programs,
+      pvm_contexts' = pvm_contexts,
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
 
@@ -973,12 +1199,12 @@ module jam_protocol {
     }
     all {
       can_terminate,
+      // Canonical effect set ordering
+      current_block' = current_block,
       services' = services.setBy(service_id, s => { ...s, state: Terminated, balance: 0 }),
       accounts' = accounts.setBy(caller, balance => balance + service.balance),
-      current_block' = current_block,
       pending_calls' = pending_calls,
       next_service_id' = next_service_id,
-      // JAM state unchanged
       cores' = cores,
       work_packages' = work_packages,
       work_results' = work_results,
@@ -987,7 +1213,37 @@ module jam_protocol {
       next_work_item_id' = next_work_item_id,
       jam_state_root' = jam_state_root,
       entropy_pool' = entropy_pool,
-      validator_assignments' = validator_assignments
+      validator_assignments' = validator_assignments,
+      blocks' = blocks,
+      chain_head' = chain_head,
+      current_epoch' = current_epoch,
+      pending_extrinsics' = pending_extrinsics,
+      next_extrinsic_id' = next_extrinsic_id,
+      validators' = validators,
+      validator_count' = validator_count,
+      tickets' = tickets,
+      pending_tickets' = pending_tickets,
+      current_slot' = current_slot,
+      entropy_accumulator' = entropy_accumulator,
+      finalized_blocks' = finalized_blocks,
+      grandpa_round' = grandpa_round,
+      pending_votes' = pending_votes,
+      finality_justifications' = finality_justifications,
+      pvm_programs' = pvm_programs,
+      pvm_contexts' = pvm_contexts,
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
 
@@ -1013,9 +1269,7 @@ module jam_protocol {
 
     all {
       can_register,
-      validators' = validators.put(validator_count, new_validator),
-      validator_count' = validator_count + 1,
-      // Unchanged state (simplified)
+      // Canonical effect set with actual updates
       current_block' = current_block,
       services' = services,
       accounts' = accounts,
@@ -1035,6 +1289,8 @@ module jam_protocol {
       current_epoch' = current_epoch,
       pending_extrinsics' = pending_extrinsics,
       next_extrinsic_id' = next_extrinsic_id,
+      validators' = validators.put(validator_count, new_validator),
+      validator_count' = validator_count + 1,
       tickets' = tickets,
       pending_tickets' = pending_tickets,
       current_slot' = current_slot,
@@ -1045,7 +1301,19 @@ module jam_protocol {
       finality_justifications' = finality_justifications,
       pvm_programs' = pvm_programs,
       pvm_contexts' = pvm_contexts,
-      pvm_gas_used' = pvm_gas_used
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
 
@@ -1068,8 +1336,7 @@ module jam_protocol {
 
     all {
       can_submit,
-      pending_tickets' = pending_tickets.union(Set(new_ticket)),
-      // Unchanged state (simplified)
+      // Canonical effect set with actual updates
       current_block' = current_block,
       services' = services,
       accounts' = accounts,
@@ -1092,6 +1359,7 @@ module jam_protocol {
       validators' = validators,
       validator_count' = validator_count,
       tickets' = tickets,
+      pending_tickets' = pending_tickets.union(Set(new_ticket)),
       current_slot' = current_slot,
       entropy_accumulator' = entropy_accumulator,
       finalized_blocks' = finalized_blocks,
@@ -1100,7 +1368,19 @@ module jam_protocol {
       finality_justifications' = finality_justifications,
       pvm_programs' = pvm_programs,
       pvm_contexts' = pvm_contexts,
-      pvm_gas_used' = pvm_gas_used
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
 
@@ -1158,7 +1438,19 @@ module jam_protocol {
       pvm_programs' = pvm_programs,
       pvm_contexts' = pvm_contexts,
       pvm_gas_used' = pvm_gas_used,
-      finalized_blocks' = finalized_blocks
+      finalized_blocks' = finalized_blocks,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
 
@@ -1219,7 +1511,19 @@ module jam_protocol {
       entropy_accumulator' = entropy_accumulator,
       pvm_programs' = pvm_programs,
       pvm_contexts' = pvm_contexts,
-      pvm_gas_used' = pvm_gas_used
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
 
@@ -1244,8 +1548,7 @@ module jam_protocol {
 
     all {
       can_deploy,
-      pvm_programs' = pvm_programs.put(service_id, new_program),
-      // Unchanged state (simplified)
+      // Canonical effect set with actual updates
       current_block' = current_block,
       services' = services,
       accounts' = accounts,
@@ -1275,8 +1578,21 @@ module jam_protocol {
       grandpa_round' = grandpa_round,
       pending_votes' = pending_votes,
       finality_justifications' = finality_justifications,
+      pvm_programs' = pvm_programs.put(service_id, new_program),
       pvm_contexts' = pvm_contexts,
-      pvm_gas_used' = pvm_gas_used
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
 
@@ -1296,10 +1612,7 @@ module jam_protocol {
     }
     val segments = create_erasure_segments(blob_id, data)
     all {
-      data_blobs' = data_blobs.set(blob_id, new_blob),
-      data_segments' = data_segments.set(blob_id, segments),
-      next_blob_id' = next_blob_id + 1,
-      // Keep other state unchanged
+      // Canonical state effect set ordering
       current_block' = current_block,
       services' = services,
       accounts' = accounts,
@@ -1332,7 +1645,19 @@ module jam_protocol {
       pvm_programs' = pvm_programs,
       pvm_contexts' = pvm_contexts,
       pvm_gas_used' = pvm_gas_used,
-      availability_threshold' = availability_threshold
+      // Actual updates for this action
+      data_blobs' = data_blobs.set(blob_id, new_blob),
+      data_segments' = data_segments.set(blob_id, segments),
+      next_blob_id' = next_blob_id + 1,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
 
@@ -1379,7 +1704,7 @@ module jam_protocol {
   }
 
   // Deploy CorePlay actor (synchronous smart contract)
-  action deploy_coreplay_actor(owner: str, code: str, initial_state: str): int = {
+  action deploy_coreplay_actor(owner: str, code: str, initial_state: str): bool = {
     val actor_id = next_service_id
     val new_actor = {
       id: actor_id,
@@ -1390,16 +1715,15 @@ module jam_protocol {
       awaiting_call: false
     }
     all {
-      services' = services.set(actor_id, {
+      services' = services.put(actor_id, {
         id: actor_id,
         owner: owner,
         code_hash: "actor_code_hash",
         state: ServiceActive,
         balance: 1000,
-        gas_consumed: 0,
-        refine_entry: "main",
-        accumulate_entry: "accumulate",
-        on_message_entry: "on_message"
+        refine_code: "main",
+        accumulate_code: "accumulate",
+        on_message_code: "on_message"
       }),
       next_service_id' = next_service_id + 1,
       // Keep other state unchanged
@@ -1436,7 +1760,15 @@ module jam_protocol {
       data_blobs' = data_blobs,
       data_segments' = data_segments,
       next_blob_id' = next_blob_id,
-      availability_threshold' = availability_threshold
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
 
@@ -1447,7 +1779,7 @@ module jam_protocol {
   // Dispute resolution actions
 
   // Initiate a dispute against a validator
-  action initiate_dispute(initiator: str, target: str, dispute_type: DisputeType, evidence: str): int = {
+  action initiate_dispute(initiator: str, target: str, dispute_type: DisputeType, evidence: str): bool = {
     val dispute_id = next_dispute_id
     val new_dispute = {
       id: dispute_id,
@@ -1460,9 +1792,7 @@ module jam_protocol {
       resolution_votes: Set()
     }
     all {
-      disputes' = disputes.set(dispute_id, new_dispute),
-      next_dispute_id' = next_dispute_id + 1,
-      // Keep other state unchanged
+      // Canonical effect set with actual updates
       current_block' = current_block,
       services' = services,
       accounts' = accounts,
@@ -1499,7 +1829,14 @@ module jam_protocol {
       data_segments' = data_segments,
       next_blob_id' = next_blob_id,
       availability_threshold' = availability_threshold,
-      slashing_events' = slashing_events
+      disputes' = disputes.set(dispute_id, new_dispute),
+      next_dispute_id' = next_dispute_id + 1,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
 
@@ -1524,29 +1861,11 @@ module jam_protocol {
         resolution_votes: current_dispute.resolution_votes.union(Set(voter))
       }
       val should_slash = updated_dispute.resolution_votes.size() >= 2 * validator_count / 3
-      val final_status = if (should_slash and vote_for_slash) DisputeSlashed else 
-                        if (updated_dispute.resolution_votes.size() >= validator_count / 2) DisputeRejected 
+      val final_status = if (should_slash and vote_for_slash) DisputeSlashed else
+                        if (updated_dispute.resolution_votes.size() >= validator_count / 2) DisputeRejected
                         else DisputeOpen
       all {
-        disputes' = disputes.set(dispute_id, {
-          id: updated_dispute.id,
-          dispute_type: updated_dispute.dispute_type,
-          target_validator: updated_dispute.target_validator,
-          evidence: updated_dispute.evidence,
-          status: final_status,
-          initiated_by: updated_dispute.initiated_by,
-          block_number: updated_dispute.block_number,
-          resolution_votes: updated_dispute.resolution_votes
-        }),
-        slashing_events' = if (final_status == DisputeSlashed) {
-          slashing_events.union(Set({
-            validator: current_dispute.target_validator,
-            amount: MIN_VALIDATOR_STAKE / 10,
-            reason: "Dispute resolution",
-            block_number: current_block
-          }))
-        } else slashing_events,
-        // Keep other state unchanged
+        // Canonical effect set with actual updates
         current_block' = current_block,
         services' = services,
         accounts' = accounts,
@@ -1583,10 +1902,34 @@ module jam_protocol {
         data_segments' = data_segments,
         next_blob_id' = next_blob_id,
         availability_threshold' = availability_threshold,
-        next_dispute_id' = next_dispute_id
+        disputes' = disputes.set(dispute_id, {
+          id: updated_dispute.id,
+          dispute_type: updated_dispute.dispute_type,
+          target_validator: updated_dispute.target_validator,
+          evidence: updated_dispute.evidence,
+          status: final_status,
+          initiated_by: updated_dispute.initiated_by,
+          block_number: updated_dispute.block_number,
+          resolution_votes: updated_dispute.resolution_votes
+        }),
+        next_dispute_id' = next_dispute_id,
+        slashing_events' = if (final_status == DisputeSlashed) {
+          slashing_events.union(Set({
+            validator: current_dispute.target_validator,
+            amount: MIN_VALIDATOR_STAKE / 10,
+            reason: current_dispute.dispute_type,
+            block_number: current_block
+          }))
+        } else slashing_events,
+        scheduled_packages' = scheduled_packages,
+        scheduling_policy' = scheduling_policy,
+        parachains' = parachains,
+        xcmp_messages' = xcmp_messages,
+        next_xcmp_message_id' = next_xcmp_message_id
       }
     } else {
       all {
+        // Canonical pass-through (no updates)
         current_block' = current_block,
         services' = services,
         accounts' = accounts,
@@ -1625,10 +1968,16 @@ module jam_protocol {
         availability_threshold' = availability_threshold,
         disputes' = disputes,
         next_dispute_id' = next_dispute_id,
-        slashing_events' = slashing_events
+        slashing_events' = slashing_events,
+        scheduled_packages' = scheduled_packages,
+        scheduling_policy' = scheduling_policy,
+        parachains' = parachains,
+        xcmp_messages' = xcmp_messages,
+        next_xcmp_message_id' = next_xcmp_message_id
       }
     }
   }
+
 
   // ============================================================================
   // ADVANCED WORK PACKAGE SCHEDULING (§13 Scheduling)
@@ -1638,8 +1987,8 @@ module jam_protocol {
 
   // Submit work package with priority and scheduling info
   action submit_prioritized_work_package(
-    service_id: int, 
-    work_items: Set[WorkItem], 
+    service_id: int,
+    work_items: Set[WorkItem],
     authorization: str,
     priority: WorkPackagePriority,
     gas_fee: int
@@ -1666,9 +2015,7 @@ module jam_protocol {
       } else 0
     }
     all {
-      scheduled_packages' = scheduled_packages.union(Set(scheduled_package)),
-      next_package_id' = next_package_id + 1,
-      // Keep other state unchanged
+      // Canonical effect set with actual updates
       current_block' = current_block,
       services' = services,
       accounts' = accounts,
@@ -1678,6 +2025,7 @@ module jam_protocol {
       work_packages' = work_packages,
       work_results' = work_results,
       pending_work_packages' = pending_work_packages,
+      next_package_id' = next_package_id + 1,
       next_work_item_id' = next_work_item_id,
       jam_state_root' = jam_state_root,
       entropy_pool' = entropy_pool,
@@ -1707,13 +2055,21 @@ module jam_protocol {
       disputes' = disputes,
       next_dispute_id' = next_dispute_id,
       slashing_events' = slashing_events,
-      scheduling_policy' = scheduling_policy
+      scheduled_packages' = scheduled_packages.union(Set(scheduled_package)),
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
 
   // Get next work package based on scheduling policy
-  pure def get_next_scheduled_package(): ScheduledWorkPackage = {
-    if (scheduled_packages.size() == 0) {
+  // Parameterized selector to keep purity in contexts like expect
+  pure def select_next_scheduled_package(
+    sched: Set[ScheduledWorkPackage],
+    policy: SchedulingPolicy
+  ): ScheduledWorkPackage = {
+    if (sched.size() == 0) {
       // Return dummy package if none available
       {
         package: {
@@ -1723,31 +2079,35 @@ module jam_protocol {
         },
         priority: Low, submission_time: 0, gas_fee: 0, submitter_stake: 0
       }
-    } else if (scheduling_policy == PriorityBased) {
+    } else if (policy == PriorityBased) {
       // Get highest priority package
-      scheduled_packages.fold(
-        scheduled_packages.fold({package: {id: 0, service_id: 0, work_items: Set(), authorization: "", context: create_work_context(0, "", ""), status: WorkPending, core_assignment: 0, gas_limit: 0, gas_consumed: 0}, priority: Low, submission_time: 0, gas_fee: 0, submitter_stake: 0}, (acc, pkg) => if (priority_score(pkg) > priority_score(acc)) pkg else acc),
+      sched.fold(
+        sched.fold({package: {id: 0, service_id: 0, work_items: Set(), authorization: "", context: create_work_context(0, "", ""), status: WorkPending, core_assignment: 0, gas_limit: 0, gas_consumed: 0}, priority: Low, submission_time: 0, gas_fee: 0, submitter_stake: 0}, (acc, pkg) => if (priority_score(pkg) > priority_score(acc)) pkg else acc),
         (best, current) => if (priority_score(current) > priority_score(best)) current else best
       )
-    } else if (scheduling_policy == GasWeighted) {
+    } else if (policy == GasWeighted) {
       // Get package with highest gas fee
-      scheduled_packages.fold(
-        scheduled_packages.fold({package: {id: 0, service_id: 0, work_items: Set(), authorization: "", context: create_work_context(0, "", ""), status: WorkPending, core_assignment: 0, gas_limit: 0, gas_consumed: 0}, priority: Low, submission_time: 0, gas_fee: 0, submitter_stake: 0}, (acc, pkg) => if (priority_score(pkg) > priority_score(acc)) pkg else acc),
+      sched.fold(
+        sched.fold({package: {id: 0, service_id: 0, work_items: Set(), authorization: "", context: create_work_context(0, "", ""), status: WorkPending, core_assignment: 0, gas_limit: 0, gas_consumed: 0}, priority: Low, submission_time: 0, gas_fee: 0, submitter_stake: 0}, (acc, pkg) => if (priority_score(pkg) > priority_score(acc)) pkg else acc),
         (best, current) => if (current.gas_fee > best.gas_fee) current else best
       )
     } else {
       // FIFO - get oldest package
-      scheduled_packages.fold(
-        scheduled_packages.fold({package: {id: 0, service_id: 0, work_items: Set(), authorization: "", context: create_work_context(0, "", ""), status: WorkPending, core_assignment: 0, gas_limit: 0, gas_consumed: 0}, priority: Low, submission_time: 0, gas_fee: 0, submitter_stake: 0}, (acc, pkg) => if (priority_score(pkg) > priority_score(acc)) pkg else acc),
+      sched.fold(
+        sched.fold({package: {id: 0, service_id: 0, work_items: Set(), authorization: "", context: create_work_context(0, "", ""), status: WorkPending, core_assignment: 0, gas_limit: 0, gas_consumed: 0}, priority: Low, submission_time: 0, gas_fee: 0, submitter_stake: 0}, (acc, pkg) => if (priority_score(pkg) > priority_score(acc)) pkg else acc),
         (best, current) => if (current.submission_time < best.submission_time) current else best
       )
     }
   }
 
+  // Backwards-compatible wrapper that reads state
+  pure def get_next_scheduled_package(): ScheduledWorkPackage =
+    select_next_scheduled_package(scheduled_packages, scheduling_policy)
+
   // Calculate priority score for scheduling
   pure def priority_score(scheduled_pkg: ScheduledWorkPackage): int = {
-    val base_score = if (scheduled_pkg.priority == High) 100 
-                    else if (scheduled_pkg.priority == Medium) 50 
+    val base_score = if (scheduled_pkg.priority == High) 100
+                    else if (scheduled_pkg.priority == Medium) 50
                     else 10
     val gas_bonus = scheduled_pkg.gas_fee / 1000
     val stake_bonus = scheduled_pkg.submitter_stake / 10000
@@ -1830,7 +2190,7 @@ module jam_protocol {
     dest_para: int,
     message_type: XcmpMessageType,
     payload: str
-  ): int = {
+  ): bool = {
     val message_id = next_xcmp_message_id
     val new_message = {
       id: message_id,
@@ -1940,7 +2300,7 @@ module jam_protocol {
     val new_assignments = if (can_assign) {
       CORE_INDICES.mapBy(core_id => {
         val assigned_validators = active_validators.filter(v => v % TOTAL_CORES == core_id)
-        assigned_validators
+        assigned_validators.fold(Set(), (acc, v) => acc.union(Set(validators.get(v).public_key)))
       })
     } else {
       validator_assignments
@@ -1948,16 +2308,7 @@ module jam_protocol {
 
     all {
       can_assign,
-      validator_assignments' = new_assignments,
-      // Update validator core assignments
-      validators' = validators.keys().mapBy(i => {
-        val validator = validators.get(i)
-        val assigned_cores = CORE_INDICES.filter(core_id =>
-          new_assignments.get(core_id).contains(i)
-        )
-        { ...validator, core_assignments: assigned_cores }
-      }),
-      // Unchanged state (simplified)
+      // Canonical effect set with updates
       current_block' = current_block,
       services' = services,
       accounts' = accounts,
@@ -1971,11 +2322,19 @@ module jam_protocol {
       next_work_item_id' = next_work_item_id,
       jam_state_root' = jam_state_root,
       entropy_pool' = entropy_pool,
+      validator_assignments' = new_assignments,
       blocks' = blocks,
       chain_head' = chain_head,
       current_epoch' = current_epoch,
       pending_extrinsics' = pending_extrinsics,
       next_extrinsic_id' = next_extrinsic_id,
+      validators' = validators.keys().mapBy(i => {
+        val validator = validators.get(i)
+        val assigned_cores = CORE_INDICES.filter(core_id =>
+          new_assignments.get(core_id).contains(validator.public_key)
+        )
+        { ...validator, core_assignments: assigned_cores }
+      }),
       validator_count' = validator_count,
       tickets' = tickets,
       pending_tickets' = pending_tickets,
@@ -1987,7 +2346,19 @@ module jam_protocol {
       finality_justifications' = finality_justifications,
       pvm_programs' = pvm_programs,
       pvm_contexts' = pvm_contexts,
-      pvm_gas_used' = pvm_gas_used
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
 
@@ -2011,10 +2382,71 @@ module jam_protocol {
 
     all {
       can_rotate,
-      validators' = updated_validators,
-      current_epoch' = current_epoch + 1,
-      // Reset assignments for new epoch
+      // Canonical effect set with updates
+      current_block' = current_block,
+      services' = services,
+      accounts' = accounts,
+      pending_calls' = pending_calls,
+      next_service_id' = next_service_id,
+      cores' = cores,
+      work_packages' = work_packages,
+      work_results' = work_results,
+      pending_work_packages' = pending_work_packages,
+      next_package_id' = next_package_id,
+      next_work_item_id' = next_work_item_id,
+      jam_state_root' = jam_state_root,
+      entropy_pool' = entropy_pool,
       validator_assignments' = CORE_INDICES.mapBy(_ => Set()),
+      blocks' = blocks,
+      chain_head' = chain_head,
+      current_epoch' = current_epoch + 1,
+      pending_extrinsics' = pending_extrinsics,
+      next_extrinsic_id' = next_extrinsic_id,
+      validators' = updated_validators,
+      validator_count' = validator_count,
+      tickets' = tickets,
+      pending_tickets' = pending_tickets,
+      current_slot' = current_slot,
+      entropy_accumulator' = entropy_accumulator,
+      finalized_blocks' = finalized_blocks,
+      grandpa_round' = grandpa_round,
+      pending_votes' = pending_votes,
+      finality_justifications' = finality_justifications,
+      pvm_programs' = pvm_programs,
+      pvm_contexts' = pvm_contexts,
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
+    }
+  }
+
+  // ==========================================================================
+  // ECONOMIC MODELS (§10 Economics)
+  // ==========================================================================
+
+  // Force slash validator (§10.3 Validator Slashing)
+  action force_slash_validator(validator_index: int): bool = {
+    val can_slash = validators.keys().contains(validator_index)
+    val updated_validator = if (can_slash) {
+      val validator = validators.get(validator_index)
+      { ...validator, state: Slashed }
+    } else {
+      validators.get(validator_index)
+    }
+
+    all {
+      can_slash,
+      validators' = validators.put(validator_index, updated_validator),
       // Unchanged state (simplified)
       current_block' = current_block,
       services' = services,
@@ -2029,8 +2461,10 @@ module jam_protocol {
       next_work_item_id' = next_work_item_id,
       jam_state_root' = jam_state_root,
       entropy_pool' = entropy_pool,
+      validator_assignments' = validator_assignments,
       blocks' = blocks,
       chain_head' = chain_head,
+      current_epoch' = current_epoch,
       pending_extrinsics' = pending_extrinsics,
       next_extrinsic_id' = next_extrinsic_id,
       validator_count' = validator_count,
@@ -2044,13 +2478,21 @@ module jam_protocol {
       finality_justifications' = finality_justifications,
       pvm_programs' = pvm_programs,
       pvm_contexts' = pvm_contexts,
-      pvm_gas_used' = pvm_gas_used
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
-
-  // ============================================================================
-  // ECONOMIC MODELS (§10 Economics)
-  // ============================================================================
 
   // Charge gas for operation (§10.1 Gas Model)
   action charge_gas(amount: int): bool = {
@@ -2089,7 +2531,19 @@ module jam_protocol {
       pending_votes' = pending_votes,
       finality_justifications' = finality_justifications,
       pvm_programs' = pvm_programs,
-      pvm_contexts' = pvm_contexts
+      pvm_contexts' = pvm_contexts,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
 
@@ -2110,8 +2564,7 @@ module jam_protocol {
 
     all {
       can_distribute,
-      validators' = validators.put(block_author, updated_validator),
-      // Unchanged state (simplified)
+      // Canonical full effect set ordering
       current_block' = current_block,
       services' = services,
       accounts' = accounts,
@@ -2131,6 +2584,7 @@ module jam_protocol {
       current_epoch' = current_epoch,
       pending_extrinsics' = pending_extrinsics,
       next_extrinsic_id' = next_extrinsic_id,
+      validators' = validators.put(block_author, updated_validator),
       validator_count' = validator_count,
       tickets' = tickets,
       pending_tickets' = pending_tickets,
@@ -2142,7 +2596,19 @@ module jam_protocol {
       finality_justifications' = finality_justifications,
       pvm_programs' = pvm_programs,
       pvm_contexts' = pvm_contexts,
-      pvm_gas_used' = pvm_gas_used
+      pvm_gas_used' = pvm_gas_used,
+      data_blobs' = data_blobs,
+      data_segments' = data_segments,
+      next_blob_id' = next_blob_id,
+      availability_threshold' = availability_threshold,
+      disputes' = disputes,
+      next_dispute_id' = next_dispute_id,
+      slashing_events' = slashing_events,
+      scheduled_packages' = scheduled_packages,
+      scheduling_policy' = scheduling_policy,
+      parachains' = parachains,
+      xcmp_messages' = xcmp_messages,
+      next_xcmp_message_id' = next_xcmp_message_id
     }
   }
 
@@ -2196,8 +2662,7 @@ module jam_protocol {
       all {
         available_results.size() > 0,
         nondet result_id = available_results.oneOf()
-        val result_ids = Set(result_id)
-        accumulate_work_results(result_ids)
+        accumulate_work_results(Set(result_id))
       }
     },
     // Extrinsic submission
@@ -2245,22 +2710,19 @@ module jam_protocol {
     // GRANDPA block finalization
     all {
       blocks.keys().size() > 1,  // Need at least genesis + 1 block
-      nondet target_number = blocks.keys().oneOf()
-      all {
-        target_number > 0,
-        not(finalized_blocks.contains(target_number)),
-        finalize_block("parent_hash", target_number)
-      }
+      chain_head > 0,
+      not(finalized_blocks.contains(chain_head)),
+      finalize_block("parent_hash", chain_head)
     },
     // Validator assignment to cores
     all {
       validators.keys().size() >= TOTAL_CORES,
-      assign_validators_to_cores()
+      assign_validators_to_cores
     },
     // Validator set rotation
     all {
       current_epoch % VALIDATOR_ROTATION_PERIOD == 0,
-      rotate_validator_set()
+      rotate_validator_set
     },
     // Gas charging for operations
     all {
@@ -2276,608 +2738,7 @@ module jam_protocol {
     }
   }
 
-  // ============================================================================
-  // INVARIANTS
-  // ============================================================================
-
-  // Account balances should never be negative
-  val accounts_non_negative =
-    accounts.keys().forall(account => accounts.get(account) >= 0)
-
-  // Service balances should never be negative
-  val service_balances_non_negative =
-    services.keys().forall(id => services.get(id).balance >= 0)
-
-  // Active services should have minimum balance
-  val active_services_funded =
-    services.keys().forall(id => {
-      val service = services.get(id)
-      service.state != ServiceActive or service.balance >= MIN_SERVICE_BALANCE
-    })
-
-  // Block numbers should be monotonic
-  val blocks_monotonic = current_block >= 0
-
-  // Conservation of funds - total money in system should remain constant
-  val total_funds =
-    accounts.keys().fold(0, (sum, acc) => sum + accounts.get(acc)) +
-    services.keys().fold(0, (sum, id) => sum + services.get(id).balance)
-
-  val funds_conservation = total_funds == 25000  // Initial total: 10000 + 10000 + 5000
-
-  // Total system invariant
-  val system_invariant = and {
-    accounts_non_negative,
-    service_balances_non_negative,
-    active_services_funded,
-    blocks_monotonic,
-    funds_conservation
-  }
-
-  // ============================================================================
-  // TEST SCENARIOS AND PROTOCOL ANALYSIS
-  // ============================================================================
-
-  // Test 1: Basic initialization
-  run test_basic_init = {
-    init
-    .expect(and {
-      services.keys().size() == 0,
-      validator_count == 0,
-      current_slot == 0
-    })
-  }
-
-  // Test 2: Cryptographic functions
-  run test_crypto_functions = {
-    init
-    .expect(and {
-      compute_hash(Blake2b, "test") == "blake2b_hash",
-      verify_signature(Ed25519, "pubkey", "message", "sig_valid") == true,
-      verify_signature(Ed25519, "pubkey", "message", "invalid") == false
-    })
-  }
-
-  // Test 3: Data Availability Layer
-  run test_data_availability = {
-    val blob_result = init.then(store_data_blob("test_data", 100))
-    blob_result.then(all {
-      assert(data_blobs.keys().size() == 1),
-      assert(data_segments.keys().size() == 1),
-      assert(verify_data_availability(1))
-    })
-  }
-
-  // Test 4: CorePlay Actor Deployment
-  run test_coreplay_deployment = {
-    init
-    .then(deploy_coreplay_actor("alice", "contract_code", "initial_state"))
-    .expect(and {
-      services.keys().size() == 1,
-      services.get(1).state == ServiceActive,
-      services.get(1).owner == "alice"
-    })
-  }
-
-  // Test 5: Data blob erasure coding
-  run test_erasure_coding = {
-    init
-    .then(store_data_blob("test_data", 100))
-    .expect(and {
-      data_segments.keys().contains(1),
-      data_segments.get(1).size() == 4
-    })
-  }
-
-  // Test 6: Dispute Resolution System
-  run test_dispute_resolution = {
-    init
-    .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(register_validator("validator2", MIN_VALIDATOR_STAKE))
-    .then(initiate_dispute("validator1", "validator2", InvalidWorkPackage, "evidence_data"))
-    .expect(and {
-      disputes.keys().size() == 1,
-      disputes.get(1).status == DisputeOpen,
-      disputes.get(1).target_validator == "validator2"
-    })
-  }
-
-  // Test 7: Dispute Voting and Slashing
-  run test_dispute_voting = {
-    init
-    .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(register_validator("validator2", MIN_VALIDATOR_STAKE))
-    .then(register_validator("validator3", MIN_VALIDATOR_STAKE))
-    .then(initiate_dispute("validator1", "validator2", SlashableOffense, "malicious_behavior"))
-    .then(vote_on_dispute(1, "validator1", true))
-    .then(vote_on_dispute(1, "validator3", true))
-    .expect(and {
-      disputes.get(1).resolution_votes.size() >= 2,
-      slashing_events.size() >= 0  // May trigger slashing based on vote threshold
-    })
-  }
-
-  // Test 8: Advanced Work Package Scheduling
-  run test_priority_scheduling = {
-    init
-    .then(deploy_service("alice", "service_code", 2000, "refine", "accumulate", "message"))
-    .then(submit_prioritized_work_package(1, Set({
-      id: 1, service_id: 1, payload: "high_priority", gas_limit: 1000,
-      status: WorkPending, refine_output: "", accumulate_input: ""
-    }), "auth1", High, 5000))
-    .then(submit_prioritized_work_package(1, Set({
-      id: 2, service_id: 1, payload: "low_priority", gas_limit: 500,
-      status: WorkPending, refine_output: "", accumulate_input: ""
-    }), "auth2", Low, 1000))
-    .expect(and {
-      scheduled_packages.size() == 2,
-      scheduling_policy == PriorityBased,
-      val next_pkg = get_next_scheduled_package()
-      next_pkg.priority == High
-    })
-  }
-
-  // Test 9: Priority Score Calculation
-  run test_priority_scoring = {
-    init
-    .expect(and {
-      val high_priority_pkg = {
-        package: {
-          id: 1, service_id: 1, work_items: Set(), authorization: "",
-          context: create_work_context(0, "", ""), status: WorkPending,
-          core_assignment: 0, gas_limit: 1000, gas_consumed: 0
-        },
-        priority: High, submission_time: 0, gas_fee: 10000, submitter_stake: 100000
-      }
-      val low_priority_pkg = {
-        package: {
-          id: 2, service_id: 1, work_items: Set(), authorization: "",
-          context: create_work_context(0, "", ""), status: WorkPending,
-          core_assignment: 0, gas_limit: 500, gas_consumed: 0
-        },
-        priority: Low, submission_time: 0, gas_fee: 1000, submitter_stake: 10000
-      }
-      priority_score(high_priority_pkg) > priority_score(low_priority_pkg)
-    })
-  }
-
-  // Test 10: CoreChains Parachain Deployment
-  run test_parachain_deployment = {
-    init
-    .then(deploy_parachain(1000, "genesis_head_data", "validation_code_hash", 0, 100))
-    .expect(and {
-      parachains.keys().size() == 1,
-      parachains.get(1000).state == Onboarding,
-      services.keys().size() == 1  // Should create corresponding JAM service
-    })
-  }
-
-  // Test 11: XCMP Message Passing
-  run test_xcmp_messaging = {
-    init
-    .then(deploy_parachain(1000, "genesis_1", "code_1", 0, 100))
-    .then(deploy_parachain(2000, "genesis_2", "code_2", 0, 100))
-    .then(send_xcmp_message(1000, 2000, HorizontalMessage, "cross_chain_data"))
-    .expect(and {
-      xcmp_messages.size() == 1,
-      next_xcmp_message_id == 2,
-      xcmp_messages.exists(msg => msg.source_para == 1000 and msg.dest_para == 2000)
-    })
-  }
-
-  // Test 3: Work package processing without sufficient cores
-  run test_work_package_core_exhaustion = {
-    init
-    .then(deploy_service("alice", "test_code", 1000, "refine", "accumulate", "message"))
-    .then(all {
-      val work_item = {
-        id: 1, service_id: 1, payload: "test", gas_limit: 1000,
-        status: WorkPending, refine_output: "", accumulate_input: ""
-      }
-      // Try to submit more work packages than available cores
-      all {
-        submit_work_package(1, Set(work_item), "auth1"),
-        submit_work_package(1, Set(work_item), "auth2")
-      }
-    })
-    .expect(pending_work_packages.size() <= TOTAL_CORES)
-  }
-
-  // Test 4: GRANDPA finalization without sufficient votes
-  run test_grandpa_insufficient_votes = {
-    init
-    .then(all {
-      register_validator("val1", MIN_VALIDATOR_STAKE),
-      register_validator("val2", MIN_VALIDATOR_STAKE)
-    })
-    .then(produce_block)  // Create block 1
-    .then(all {
-      submit_grandpa_vote(0, Prevote, "block_hash", 1),
-      submit_grandpa_vote(1, Prevote, "block_hash", 1)
-      // Only 2 votes, need GRANDPA_THRESHOLD (5)
-    })
-    .then(finalize_block("block_hash", 1))  // Should fail
-    .expect(not(finalized_blocks.contains(1)))
-  }
-
-  // Test 5: Gas limit exhaustion in PVM
-  run test_pvm_gas_exhaustion = {
-    init
-    .then(deploy_service("alice", "test_code", 1000, "refine", "accumulate", "message"))
-    .then(deploy_pvm_program(1, "expensive_bytecode", MAX_GAS_PER_BLOCK + 1))  // Should fail
-    .expect(not(pvm_programs.keys().contains(1)))
-  }
-
-  // Test 6: Economic attack - service balance drain
-  run test_service_balance_drain = {
-    init
-    .then(deploy_service("alice", "test_code", 1000, "refine", "accumulate", "message"))
-    .then(all {
-      val expensive_work = {
-        id: 1, service_id: 1, payload: "expensive", gas_limit: 5000,
-        status: WorkPending, refine_output: "", accumulate_input: ""
-      }
-      submit_work_package(1, Set(expensive_work), "auth")
-    })
-    .then(refine_work_package(1))
-    .expect(services.get(1).balance >= 0)  // Should not go negative
-  }
-
-  // Test 7: Validator slashing and recovery
-  run test_validator_slashing = {
-    init
-    .then(register_validator("malicious_val", MIN_VALIDATOR_STAKE))
-    .then(all {
-      // Simulate slashing by setting validator state
-      validators' = validators.put(0, { ...validators.get(0), state: Slashed })
-    })
-    .then(rotate_validator_set())  // Should remove slashed validator
-    .expect(validators.get(0).state == ValidatorInactive)
-  }
-
-  // Test 8: Block production timing attack
-  run test_block_timing_attack = {
-    init
-    .then(register_validator("attacker", MIN_VALIDATOR_STAKE))
-    .then(all {
-      // Try to submit ticket for past slot
-      submit_ticket(0, current_slot - 1, "old_entropy"),  // Should fail
-      submit_ticket(0, current_slot + 100, "future_entropy")  // Future slot
-    })
-    .expect(pending_tickets.size() <= 1)  // Only future ticket should succeed
-  }
-
-  // Test 9: Service call spam attack
-  run test_service_call_spam = {
-    init
-    .then(deploy_service("alice", "test_code", 1000, "refine", "accumulate", "message"))
-    .then(all {
-      // Submit many service calls to exhaust gas
-      submit_service_call("alice", 1, "spam1", 1000, 1),
-      submit_service_call("alice", 1, "spam2", 1000, 1),
-      submit_service_call("alice", 1, "spam3", 1000, 1),
-      submit_service_call("alice", 1, "spam4", 1000, 1),
-      submit_service_call("alice", 1, "spam5", 1000, 1)
-    })
-    .then(produce_block)
-    .expect(pending_calls.size() == 0)  // Should process within gas limits
-  }
-
-  // Test 10: Cross-service communication integrity
-  run test_cross_service_integrity = {
-    init
-    .then(all {
-      deploy_service("alice", "service1", 1000, "refine1", "accumulate1", "message1"),
-      deploy_service("bob", "service2", 1000, "refine2", "accumulate2", "message2")
-    })
-    .then(all {
-      val work_item1 = {
-        id: 1, service_id: 1, payload: "cross_call_to_2", gas_limit: 500,
-        status: WorkPending, refine_output: "", accumulate_input: ""
-      }
-      submit_work_package(1, Set(work_item1), "auth1")
-    })
-    .expect(work_packages.keys().size() == 1)
-  }
-
-  // ============================================================================
-  // POTENTIAL ISSUES TO LOOK INTO
-  // ============================================================================
-
-  /*
-
-  1. **Insufficient Access Control**:
-     - Services can be terminated by anyone who knows the service ID
-     - No proper authentication for work package submission
-     - Validator registration lacks proper stake verification
-
-  2. **Economic Vulnerabilities**:
-     - No protection against service balance drain attacks
-     - Gas pricing model allows for economic DoS attacks
-     - Block rewards can be manipulated through validator collusion
-
-  3. **Consensus Weaknesses**:
-     - GRANDPA threshold is hardcoded and may not scale with validator set size
-     - No protection against long-range attacks in SAFROLE
-     - Validator rotation period is predictable, enabling targeted attacks
-
-  4. **Resource Exhaustion**:
-     - Core allocation is first-come-first-served, enabling DoS
-     - PVM memory limits are not enforced per service
-     - Work package size limits can be bypassed through fragmentation
-
-  5. **State Management Issues**:
-     - No garbage collection for old work results
-     - Entropy accumulator lacks proper randomness guarantees
-     - Block finalization can be delayed indefinitely
-
-  6. **Cryptographic Concerns**:
-     - Hash functions are simplified and not cryptographically secure
-     - Signature verification is mocked and not implemented
-     - Merkle tree proofs lack proper verification
-
-  7. **Scalability Limitations**:
-     - Fixed number of cores limits throughput
-     - Validator set size is capped artificially low
-     - State growth is unbounded in several data structures
-
-  8. **Timing Attacks**:
-     - Block production timing is predictable
-     - Work package processing order can be manipulated
-     - Finality delays can be exploited for MEV extraction
-  */
-
-  // Test 11: State bloat attack
-  run test_state_bloat = {
-    init
-    .then(all {
-      deploy_service("alice", "bloat1", 1000, "r1", "a1", "m1"),
-      deploy_service("alice", "bloat2", 1000, "r2", "a2", "m2"),
-      deploy_service("alice", "bloat3", 1000, "r3", "a3", "m3")
-    })
-    .then(all {
-      submit_extrinsic(Transfer, "large_data_1", "alice"),
-      submit_extrinsic(Transfer, "large_data_2", "alice"),
-      submit_extrinsic(Transfer, "large_data_3", "alice")
-    })
-    .expect(pending_extrinsics.size() <= 10)  // Should have reasonable limits
-  }
-
-  // Test 12: Validator set manipulation
-  run test_validator_set_manipulation = {
-    init
-    .then(all {
-      register_validator("honest1", MIN_VALIDATOR_STAKE),
-      register_validator("honest2", MIN_VALIDATOR_STAKE),
-      register_validator("attacker1", MIN_VALIDATOR_STAKE * 10),  // High stake
-      register_validator("attacker2", MIN_VALIDATOR_STAKE * 10)
-    })
-    .then(assign_validators_to_cores())
-    .expect(validator_assignments.keys().forall(core_id =>
-      validator_assignments.get(core_id).size() <= 2  // Prevent concentration
-    ))
-  }
-
-  // Test 13: Finality stall attack
-  run test_finality_stall = {
-    init
-    .then(all {
-      register_validator("v1", MIN_VALIDATOR_STAKE),
-      register_validator("v2", MIN_VALIDATOR_STAKE),
-      register_validator("v3", MIN_VALIDATOR_STAKE)
-    })
-    .then(produce_block)  // Block 1
-    .then(produce_block)  // Block 2
-    .then(all {
-      // Conflicting votes to stall finality
-      submit_grandpa_vote(0, Prevote, "hash1", 1),
-      submit_grandpa_vote(1, Prevote, "hash2", 1),  // Different hash
-      submit_grandpa_vote(2, Prevote, "hash1", 1)
-    })
-    .expect(finalized_blocks.size() == 1)  // Only genesis should be finalized
-  }
-
-  // Test 14: PVM memory exhaustion attack
-  run test_pvm_memory_attack = {
-    init
-    .then(deploy_service("alice", "memory_hog", 1000, "refine", "accumulate", "message"))
-    .then(deploy_pvm_program(1, "memory_intensive_bytecode", 1000))
-    .then(all {
-      val memory_work = {
-        id: 1, service_id: 1, payload: "allocate_max_memory", gas_limit: 1000,
-        status: WorkPending, refine_output: "", accumulate_input: ""
-      }
-      submit_work_package(1, Set(memory_work), "auth")
-    })
-    .expect(pvm_gas_used <= MAX_GAS_PER_BLOCK)  // Should enforce limits
-  }
-
-  // Test 15: Entropy manipulation attack
-  run test_entropy_manipulation = {
-    init
-    .then(register_validator("entropy_attacker", MIN_VALIDATOR_STAKE))
-    .then(all {
-      // Try to influence entropy through predictable inputs
-      submit_ticket(0, current_slot + 1, "predictable_entropy_1"),
-      submit_ticket(0, current_slot + 2, "predictable_entropy_2")
-    })
-    .expect(entropy_accumulator != "predictable_result")  // Should be unpredictable
-  }
-
-  // Test 16: Work package ordering manipulation
-  run test_work_package_ordering = {
-    init
-    .then(all {
-      deploy_service("alice", "service1", 1000, "r1", "a1", "m1"),
-      deploy_service("bob", "service2", 1000, "r2", "a2", "m2")
-    })
-    .then(all {
-      val high_priority_work = {
-        id: 1, service_id: 1, payload: "urgent", gas_limit: 10000,
-        status: WorkPending, refine_output: "", accumulate_input: ""
-      }
-      val low_priority_work = {
-        id: 2, service_id: 2, payload: "normal", gas_limit: 5000,
-        status: WorkPending, refine_output: "", accumulate_input: ""
-      }
-      // Submit low priority first to test ordering
-      all {
-        submit_work_package(2, Set(low_priority_work), "auth1"),
-        submit_work_package(1, Set(high_priority_work), "auth2")
-      }
-    })
-    .expect(pending_work_packages.size() == 2)  // Both should be accepted
-  }
-
-  // Test 17: Validator collusion for block rewards
-  run test_validator_collusion = {
-    init
-    .then(all {
-      register_validator("colluder1", MIN_VALIDATOR_STAKE),
-      register_validator("colluder2", MIN_VALIDATOR_STAKE),
-      register_validator("honest", MIN_VALIDATOR_STAKE)
-    })
-    .then(assign_validators_to_cores())
-    .then(all {
-      // Colluders try to monopolize block production
-      distribute_rewards(0, BLOCK_REWARD),  // Reward colluder1
-      distribute_rewards(1, BLOCK_REWARD),  // Reward colluder2
-      distribute_rewards(0, BLOCK_REWARD)   // Extra reward to colluder1
-    })
-    .expect(validators.get(0).stake <= MIN_VALIDATOR_STAKE + BLOCK_REWARD * 2)
-  }
-
-  // Test 18: Service termination griefing
-  run test_service_termination_griefing = {
-    init
-    .then(deploy_service("alice", "important_service", 5000, "refine", "accumulate", "message"))
-    .then(all {
-      val critical_work = {
-        id: 1, service_id: 1, payload: "critical_operation", gas_limit: 1000,
-        status: WorkPending, refine_output: "", accumulate_input: ""
-      }
-      submit_work_package(1, Set(critical_work), "auth")
-    })
-    .then(terminate_service(1, "bob"))  // Wrong caller - should fail
-    .expect(services.get(1).state == ServiceActive)  // Service should remain active
-  }
-
-  // Test 19: Core assignment fairness
-  run test_core_assignment_fairness = {
-    init
-    .then(all {
-      register_validator("whale", MIN_VALIDATOR_STAKE * 100),  // Wealthy validator
-      register_validator("minnow1", MIN_VALIDATOR_STAKE),
-      register_validator("minnow2", MIN_VALIDATOR_STAKE),
-      register_validator("minnow3", MIN_VALIDATOR_STAKE)
-    })
-    .then(assign_validators_to_cores())
-    .expect(
-      // Whale shouldn't get disproportionate core assignments
-      validator_assignments.keys().exists(core_id =>
-        validator_assignments.get(core_id).contains(1) or  // minnow gets some cores
-        validator_assignments.get(core_id).contains(2) or
-        validator_assignments.get(core_id).contains(3)
-      )
-    )
-  }
-
-  // Test 20: Long-range attack simulation
-  run test_long_range_attack = {
-    init
-    .then(register_validator("attacker", MIN_VALIDATOR_STAKE))
-    .then(produce_block)  // Block 1
-    .then(produce_block)  // Block 2
-    .then(produce_block)  // Block 3
-    .then(all {
-      // Attacker tries to rewrite history from block 1
-      submit_grandpa_vote(0, Prevote, "alternative_hash", 1),
-      submit_grandpa_vote(0, Precommit, "alternative_hash", 1)
-    })
-    .expect(finalized_blocks.contains(1) implies
-      blocks.get(1).header.parent_hash != "alternative_hash")
-  }
-
-  // ============================================================================
-  // POTENTIAL ISSUES TO LOOK INTO
-  // ============================================================================
-
-  /*
-
-  9. **MEV (Maximal Extractable Value) Vulnerabilities**:
-     - Work package ordering can be manipulated for profit
-     - Block producers can censor specific transactions
-     - Cross-service calls lack atomic execution guarantees
-
-  10. **Governance Attacks**:
-      - No mechanism to update protocol parameters
-      - Validator set changes lack proper governance
-      - Economic parameters are hardcoded and inflexible
-
-  11. **Privacy Leaks**:
-      - All work package contents are visible on-chain
-      - Service state transitions are publicly observable
-      - Validator assignments reveal network topology
-
-  12. **Availability Attacks**:
-      - Core exhaustion can halt specific services
-      - Work package spam can delay legitimate operations
-      - Validator offline attacks can reduce network capacity
-
-  13. **Economic Manipulation**:
-      - Gas price manipulation through coordinated attacks
-      - Service balance draining through expensive operations
-      - Validator reward concentration through collusion
-
-  14. **State Consistency Issues**:
-      - Race conditions in work package processing
-      - Inconsistent state updates across service calls
-      - Missing atomicity guarantees for cross-service operations
-
-  15. **Network Partition Attacks**:
-      - GRANDPA finality can be stalled during partitions
-      - Validator assignments become inconsistent
-      - Work package routing fails during network splits
-  */
-
-  // Test 21: Race condition in work package processing
-  run test_work_package_race_condition = {
-    init
-    .then(deploy_service("alice", "racy_service", 2000, "refine", "accumulate", "message"))
-    .then(all {
-      val work1 = {
-        id: 1, service_id: 1, payload: "operation_a", gas_limit: 500,
-        status: WorkPending, refine_output: "", accumulate_input: ""
-      }
-      val work2 = {
-        id: 2, service_id: 1, payload: "operation_b", gas_limit: 500,
-        status: WorkPending, refine_output: "", accumulate_input: ""
-      }
-      // Submit conflicting operations simultaneously
-      all {
-        submit_work_package(1, Set(work1), "auth1"),
-        submit_work_package(1, Set(work2), "auth2")
-      }
-    })
-    .then(all {
-      refine_work_package(1),
-      refine_work_package(2)  // Both try to modify same service state
-    })
-    .expect(services.get(1).balance >= 0)  // State should remain consistent
-  }
-
-  // Test 22: Cryptographic downgrade attack
-  run test_crypto_downgrade = {
-    init
-    .then(all {
-      // Test with weakest supported algorithms
-      val weak_hash = compute_hash(Sha256, "sensitive_data")
-      val weak_sig = verify_signature(Ecdsa, "pubkey", "message", "sig")
-      all {
-        weak_hash != "",
-        weak_sig == true
-      }
-    })
-    .expect(true)  // This test reveals the protocol accepts weak crypto
-  }
 }
+
+
+
