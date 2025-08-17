@@ -1,6 +1,6 @@
 # Confiture Protocol Specification in Quint
 
-This project contains a part of the formal specification of the JAM (Join-Accumulate Machine) protocol written in Quint, a modern specification language based on TLA+.
+This project contains a specification of the JAM (Join-Accumulate Machine) protocol written in Quint, a modern specification language based on TLA+.
 
 ## Overview
 
@@ -12,31 +12,9 @@ JAM is a trustless supercomputer that combines elements from both Polkadot and E
 
 ## Files
 
-- `confiture_protocol.qnt` - Main protocol specification
-- `confiture_protocol_test.qnt` - Comprehensive test suite
+- `confiture.qnt` - Main protocol specification
+- `tests/test_*.qnt` - A test suite
 - `README.md` - This documentation
-
-## Key Components Modeled
-
-### 1. **Service Management**
-- Service deployment with owner authentication
-- Service states: Inactive, Active, Suspended, Terminated
-- Balance management and minimum funding requirements
-
-### 2. **Core Time Allocation**
-- Purchase of computation time on specific cores
-- Conflict detection and resolution
-- Time-based scheduling system
-
-### 3. **Service Execution**
-- Service call submission and queuing
-- Gas-based execution model
-- Block production with call processing
-
-### 4. **State Management**
-- Account balances and transfers
-- Service storage (key-value pairs)
-- Block chain with monotonic timestamps
 
 ## Invariants Verified
 
@@ -61,21 +39,27 @@ To run the specification and tests, you'll need to install Quint:
 npm install -g @informalsystems/quint
 ```
 
+or on MacOS:
+
+```bash
+brew install quint
+```
+
 Then run various test scenarios:
 
 ```bash
 # Run basic deployment test
-quint run confiture_protocol_test.qnt --run=deploy_service_test
-
-# Run invariant preservation test
-quint run confiture_protocol_test.qnt --run=invariant_preservation_test
-
-# Check system invariants
-quint run confiture_protocol.qnt --invariant=system_invariant
+for t in tests/test_*.qnt; do
+	quint run "$t.qnt"
 
 # Run random execution to find violations
-quint run confiture_protocol.qnt --max-steps=20
+quint run confiture.qnt --max-steps=20
+
+# Run Apalache and verify
+quint verify confiture.qnt
 ```
+
+Note that verify works for some depth but then does finish.
 
 ## Test Scenarios Included
 
