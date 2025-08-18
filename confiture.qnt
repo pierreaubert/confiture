@@ -4,10 +4,6 @@
 
 module confiture {
 
-  // ============================================================================
-  // DATA AVAILABILITY LAYER TYPES
-  // ============================================================================
-
   type DataBlob = {
     id: int,
     data: str,
@@ -296,10 +292,8 @@ module confiture {
   }
 
   // ============================================================================
-  // ADVANCED COMPONENT TYPES
-  // ============================================================================
-
   // Dispute Resolution System types (§12 Disputes)
+  // ============================================================================
   type DisputeType = InvalidWorkPackage | InvalidGuarantee | InvalidAssurance | SlashableOffense
   type DisputeStatus = DisputeOpen | DisputeResolved | DisputeRejected | DisputeSlashed
 
@@ -321,7 +315,9 @@ module confiture {
     block_number: int
   }
 
-  // Advanced Scheduling types (§13 Scheduling)
+  // ============================================================================
+  // Scheduling types (§13 Scheduling)
+  // ============================================================================
   type WorkPackagePriority = High | Medium | Low
   type SchedulingPolicy = PriorityBased | GasWeighted | StakeWeighted | FIFO
 
@@ -333,7 +329,9 @@ module confiture {
     submitter_stake: int
   }
 
+  // ============================================================================
   // CoreChains compatibility types (§14 CoreChains)
+  // ============================================================================
   type ParachainState = Active | Inactive | Onboarding | Offboarding
   type XcmpMessageType = DownwardMessage | UpwardMessage | HorizontalMessage
 
@@ -424,6 +422,10 @@ module confiture {
   var xcmp_messages: Set[XcmpMessage]
   var next_xcmp_message_id: int
 
+  // ============================================================================
+  // CONSTANTS
+  // ============================================================================
+
   // Protocol constants (§1.2 Protocol Parameters)
   pure val MAX_GAS_PER_BLOCK = 15000000           // Maximum gas per block
   pure val MIN_SERVICE_BALANCE = 1000             // Minimum service balance (§2.2)
@@ -485,7 +487,9 @@ module confiture {
   pure def create_work_context(block_num: int, entropy: str, state_root: str): WorkContext =
     { block_number: block_num, timestamp: block_num * 6000, entropy: entropy, prior_state_root: state_root }
 
+  // ============================================================================
   // Create genesis block (§4.2 Genesis Block)
+  // ============================================================================
   pure def create_genesis_block(): Block = {
     val genesis_header = {
       parent_hash: "0x0000000000000000000000000000000000000000000000000000000000000000",
@@ -510,7 +514,9 @@ module confiture {
     }
   }
 
+  // ============================================================================
   // Create block header for new block (§4.2 Block Header Construction)
+  // ============================================================================
   pure def create_block_header(parent_hash: str, block_num: int, state_root: str, entropy_root: str, timestamp: int, epoch: int): BlockHeader = {
     parent_hash: parent_hash,
     block_number: block_num,
@@ -563,8 +569,17 @@ module confiture {
     funds_conservation
   }
 
-   // Deploy a new JAM service with entry points
-    action deploy_service(owner: str, code_hash: str, initial_balance: int, refine_code: str, accumulate_code: str, on_message_code: str): bool = {
+  // ============================================================================
+  // Actions
+  // ============================================================================
+  action deploy_service(
+  	 owner: str,
+	 code_hash: str,
+	 initial_balance: int,
+	 refine_code: str,
+	 accumulate_code: str,
+	 on_message_code: str
+    ): bool = {
     val can_deploy = and {
       accounts.keys().contains(owner),
       accounts.get(owner) >= initial_balance,
@@ -1027,7 +1042,7 @@ module confiture {
     }
   }
 
-    // ============================================================================
+  // ============================================================================
   // INITIAL STATE (§1.3 JAM State Initialization)
   // ============================================================================
 
@@ -1777,8 +1792,6 @@ module confiture {
   // DISPUTE RESOLUTION SYSTEM ACTIONS (§12 Disputes)
   // ============================================================================
 
-  // Dispute resolution actions
-
   // Initiate a dispute against a validator
   action initiate_dispute(initiator: str, target: str, dispute_type: DisputeType, evidence: str): bool = {
     val dispute_id = next_dispute_id
@@ -1979,12 +1992,9 @@ module confiture {
     }
   }
 
-
   // ============================================================================
-  // ADVANCED WORK PACKAGE SCHEDULING (§13 Scheduling)
+  // WORK PACKAGE SCHEDULING (§13 Scheduling)
   // ============================================================================
-
-  // Advanced scheduling actions
 
   // Submit work package with priority and scheduling info
   action submit_prioritized_work_package(

@@ -50,7 +50,7 @@ Then run various test scenarios:
 ```bash
 # Type check tests
 for t in tests/test_*.qnt; do
-        echo "Type checking $t"
+    echo "Type checking $t"
 	quint typecheck "$t"
 done
 
@@ -66,29 +66,5 @@ quint run confiture.qnt --max-steps=20
 quint verify confiture.qnt
 ```
 
-Note that verify works for some depth but then does finish.
+Note that verify works for some depth but then does not finish in a reasonable amount of time.
 
-## Test Scenarios Included
-
-- **Basic Operations**: Service deployment, core time purchase, service calls
-- **Error Cases**: Insufficient funds, unauthorized operations, scheduling conflicts
-- **Property Tests**: Invariant preservation, balance conservation
-- **Stress Tests**: Multiple services, gas limit enforcement
-- **Temporal Properties**: Eventually consistency, service persistence
-
-## Architecture Highlights
-
-The specification models JAM as a state machine with:
-- **1024 cores** available for computation
-- **6-second block time**
-- **15M gas limit** per block
-- **Minimum 1000 unit balance** for active services
-
-## Formal Verification
-
-The Quint specification can be used with:
-- **Apalache** for bounded model checking
-- **TLC** for exhaustive state exploration
-- **Quint simulator** for random execution testing
-
-This provides mathematical guarantees about protocol correctness and helps identify potential issues before implementation.
