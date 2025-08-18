@@ -11,6 +11,6 @@ module test_max_items_in_package {
     init
     .then(deploy_service("alice", "max_items_svc", MIN_SERVICE_BALANCE, "r","a","m"))
     .then(submit_work_package(0, items, "authMaxItems"))
-    .expect(pending_work_packages.size() == 1)
+    .expect(state_core.pending_work_packages.size() == 1)
   }
 }

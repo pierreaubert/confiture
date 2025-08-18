@@ -7,6 +7,6 @@ module test_max_gas_single_item {
       id: 0, service_id: 0, payload: "max_gas",
       gas_limit: MAX_GAS_PER_BLOCK, status: WorkPending, refine_output: "", accumulate_input: ""
     }), "mg"))
-    .expect(pending_work_packages.size() == 1)
+    .expect(state_core.pending_work_packages.size() == 1)
   }
 }

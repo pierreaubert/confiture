@@ -5,9 +5,9 @@ module test_basic_init {
   run test_basic_init = {
     init
     .expect(and {
-      services.keys().size() == 0,
-      validator_count == 0,
-      current_slot == 0
+      state_basic.services.keys().size() == 0,
+      state_safrole.validator_count == 0,
+      state_safrole.current_slot == 0
     })
   }
 }

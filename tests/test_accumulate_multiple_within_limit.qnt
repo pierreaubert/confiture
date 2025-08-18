@@ -10,6 +10,6 @@ module test_accumulate_multiple_within_limit {
     .then(submit_work_package(0, Set({ id:2, service_id:0, payload:"p2", gas_limit:5, status:WorkPending, refine_output:"", accumulate_input:"" }), "m2"))
     .then(refine_work_package(2))
     .then(accumulate_work_results(Set(0,2)))
-    .expect(jam_state_root == "state_accumulated")
+    .expect(state_chain.jam_state_root == "state_accumulated")
   }
 }

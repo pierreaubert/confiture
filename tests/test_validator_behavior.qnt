@@ -8,9 +8,9 @@ module test_validator_behavior {
     .then(produce_block)
     .then(distribute_rewards(0, BLOCK_REWARD))
     .expect(and {
-      validators.keys().size() == 1,
-      validators.get(0).stake >= MIN_VALIDATOR_STAKE,
-      blocks.keys().size() == 1
+      state_safrole.validators.keys().size() == 1,
+      state_safrole.validators.get(0).stake >= MIN_VALIDATOR_STAKE,
+      state_blockchain.blocks.keys().size() == 1
     })
   }
 }

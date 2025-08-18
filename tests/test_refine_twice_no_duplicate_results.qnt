@@ -10,9 +10,9 @@ module test_refine_twice_no_duplicate_results {
     .then(refine_work_package(0))
     .then(refine_work_package(0))
     .expect(and {
-      work_results.keys().size() == 1,
-      work_results.keys().contains(0),
-      not(pending_work_packages.exists(p => p.id == 0))
+      state_core.work_results.keys().size() == 1,
+      state_core.work_results.keys().contains(0),
+      not(state_core.pending_work_packages.exists(p => p.id == 0))
     })
   }
 }

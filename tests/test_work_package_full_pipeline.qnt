@@ -10,9 +10,9 @@ module test_work_package_full_pipeline {
     .then(refine_work_package(0))
     .then(accumulate_work_results(Set(0)))
     .expect(and {
-      work_results.keys().contains(0),
-      work_results.get(0).success,
-      jam_state_root == "state_accumulated"
+      state_core.work_results.keys().contains(0),
+      state_core.work_results.get(0).success,
+      state_chain.jam_state_root == "state_accumulated"
     })
   }
 }

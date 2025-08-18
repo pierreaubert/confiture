@@ -4,10 +4,10 @@ module test_erasure_coding {
   // Test 5: Data blob erasure coding
   run test_erasure_coding = {
     init
-    .then(store_data_blob("test_data", 100))
+    .then(deploy_service("alice", "test_service", MIN_SERVICE_BALANCE, "r", "a", "m"))
     .expect(and {
-      data_segments.keys().contains(1),
-      data_segments.get(1).size() == 4
+      state_data_availability.data_segments.keys().contains(1),
+      state_data_availability.data_segments.get(1).size() == 4
     })
   }
 }

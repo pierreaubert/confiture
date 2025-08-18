@@ -8,8 +8,8 @@ module test_deploy_drain_account {
     .then(deploy_service("alice", "h4", 2500, "r","a","m"))
     .then(deploy_service("alice", "h5", 2500, "r","a","m")) // should fail
     .expect(and {
-      services.keys().size() == 4,
-      accounts.get("alice") == 10000 - 4 * 2500
+      state_basic.services.keys().size() == 4,
+      state_basic.accounts.get("alice") == 10000 - 4 * 2500
     })
   }
 }

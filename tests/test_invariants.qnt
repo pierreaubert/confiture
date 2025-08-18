@@ -10,7 +10,7 @@ module test_invariants {
     .expect(system_invariant)
   }
 
-  // Test: Funds conservation across deploy + block deduction (service balance + accounts sum to 25000)
+  // Test: Funds conservation across deploy + block deduction (service balance + state_basic.accounts sum to 25000)
   run test_funds_conservation = {
     init
     .then(deploy_service("alice", "hash_service", 2000, "r", "a", "m"))
@@ -18,8 +18,8 @@ module test_invariants {
     .then(produce_block)
     .expect(
       (
-        accounts.keys().fold(0, (s, k) => s + accounts.get(k)) +
-        services.keys().fold(0, (s, id) => s + services.get(id).balance)
+        state_basic.accounts.keys().fold(0, (s, k) => s + state_basic.accounts.get(k)) +
+        state_basic.services.keys().fold(0, (s, id) => s + state_basic.services.get(id).balance)
       ) == 25000
     )
   }

@@ -6,11 +6,11 @@ module test_dispute_resolution {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
     .then(register_validator("validator2", MIN_VALIDATOR_STAKE))
-    .then(initiate_dispute("validator1", "validator2", InvalidWorkPackage, "evidence_data"))
+    .then(deploy_service("alice", "test_service", MIN_SERVICE_BALANCE, "r", "a", "m"))
     .expect(and {
-      disputes.keys().size() == 1,
-      disputes.get(1).status == DisputeOpen,
-      disputes.get(1).target_validator == "validator2"
+      state_dispute.disputes.keys().size() == 1,
+      state_dispute.disputes.get(1).status == DisputeOpen,
+      state_dispute.disputes.get(1).target_validator == "validator2"
     })
   }
 }

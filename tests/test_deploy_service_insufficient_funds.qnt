@@ -4,6 +4,6 @@ module test_deploy_service_insufficient_funds {
   run test_deploy_service_insufficient_funds = {
     init
     .then(deploy_service("alice", "huge_hash", 9999999, "r", "a", "m"))
-    .expect(services.keys().size() == 0)
+    .expect(state_basic.services.keys().size() == 0)
   }
 }

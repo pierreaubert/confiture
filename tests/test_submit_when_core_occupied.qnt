@@ -11,6 +11,6 @@ module test_submit_when_core_occupied {
       id: 1, service_id: 0, payload: "p2", gas_limit: 1,
       status: WorkPending, refine_output: "", accumulate_input: ""
     }), "auth2"))
-    .expect(pending_work_packages.size() == 1)
+    .expect(state_core.pending_work_packages.size() == 1)
   }
 }

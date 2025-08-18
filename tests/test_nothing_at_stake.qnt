@@ -13,8 +13,8 @@ module test_nothing_at_stake {
     .then(submit_grandpa_vote(0, Prevote, "vote_chain_b", 1))  // Conflicting vote
     .expect(and {
       // System should detect equivocation
-      disputes.keys().size() >= 0,  // May create dispute for equivocation
-      slashing_events.size() >= 0  // May slash for double voting
+      state_dispute.disputes.keys().size() >= 0,  // May create dispute for equivocation
+      state_dispute.slashing_events.size() >= 0  // May slash for double voting
     })
   }
 }

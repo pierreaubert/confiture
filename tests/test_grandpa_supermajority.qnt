@@ -25,12 +25,12 @@ module test_grandpa_supermajority {
     .then(submit_grandpa_vote(4, Precommit, "block_hash_1", 1))
     .then(finalize_block("block_hash_1", 1))
     .expect(and {
-      finalized_blocks.contains(1),
-      pending_votes.filter(v => and {
+      state_grandpa.finalized_blocks.contains(1),
+      state_grandpa.pending_votes.filter(v => and {
         v.vote_type == Prevote,
         v.target_number == 1
       }).size() == GRANDPA_THRESHOLD,
-      pending_votes.filter(v => and {
+      state_grandpa.pending_votes.filter(v => and {
         v.vote_type == Precommit,
         v.target_number == 1
       }).size() == GRANDPA_THRESHOLD
@@ -58,12 +58,12 @@ module test_grandpa_supermajority {
     .then(submit_grandpa_vote(3, Precommit, "block_hash_1", 1))
     .then(finalize_block("block_hash_1", 1))
     .expect(and {
-      not(finalized_blocks.contains(1)),
-      pending_votes.filter(v => and {
+      not(state_grandpa.finalized_blocks.contains(1)),
+      state_grandpa.pending_votes.filter(v => and {
         v.vote_type == Prevote,
         v.target_number == 1
       }).size() == 4,
-      pending_votes.filter(v => and {
+      state_grandpa.pending_votes.filter(v => and {
         v.vote_type == Precommit,
         v.target_number == 1
       }).size() == 4
@@ -86,7 +86,7 @@ module test_grandpa_supermajority {
     .then(register_validator("validator11", MIN_VALIDATOR_STAKE))
     .then(register_validator("validator12", MIN_VALIDATOR_STAKE))
     .then(produce_block)
-    // More than threshold votes (8 out of 12 validators)
+    // More than threshold votes (8 out of 12 state_safrole.validators)
     .then(submit_grandpa_vote(0, Prevote, "block_hash_1", 1))
     .then(submit_grandpa_vote(1, Prevote, "block_hash_1", 1))
     .then(submit_grandpa_vote(2, Prevote, "block_hash_1", 1))
@@ -105,13 +105,13 @@ module test_grandpa_supermajority {
     .then(submit_grandpa_vote(7, Precommit, "block_hash_1", 1))
     .then(finalize_block("block_hash_1", 1))
     .expect(and {
-      finalized_blocks.contains(1),
-      validators.keys().size() == 12,
-      pending_votes.filter(v => and {
+      state_grandpa.finalized_blocks.contains(1),
+      state_safrole.validators.keys().size() == 12,
+      state_grandpa.pending_votes.filter(v => and {
         v.vote_type == Prevote,
         v.target_number == 1
       }).size() == 8,
-      pending_votes.filter(v => and {
+      state_grandpa.pending_votes.filter(v => and {
         v.vote_type == Precommit,
         v.target_number == 1
       }).size() == 8
@@ -154,14 +154,14 @@ module test_grandpa_supermajority {
     .then(finalize_block("block_hash_2", 2))
     .expect(and {
       // Neither block should finalize due to insufficient votes
-      not(finalized_blocks.contains(1)),
-      not(finalized_blocks.contains(2)),
-      pending_votes.filter(v => v.target_number == 1).size() == 8,
-      pending_votes.filter(v => v.target_number == 2).size() == 8
+      not(state_grandpa.finalized_blocks.contains(1)),
+      not(state_grandpa.finalized_blocks.contains(2)),
+      state_grandpa.pending_votes.filter(v => v.target_number == 1).size() == 8,
+      state_grandpa.pending_votes.filter(v => v.target_number == 2).size() == 8
     })
   }
 
-  // Test: Unanimous vote (all validators agree)
+  // Test: Unanimous vote (all state_safrole.validators agree)
   run test_unanimous_vote = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
@@ -172,7 +172,7 @@ module test_grandpa_supermajority {
     .then(register_validator("validator6", MIN_VALIDATOR_STAKE))
     .then(register_validator("validator7", MIN_VALIDATOR_STAKE))
     .then(produce_block)
-    // All validators vote for the same block
+    // All state_safrole.validators vote for the same block
     .then(submit_grandpa_vote(0, Prevote, "block_hash_1", 1))
     .then(submit_grandpa_vote(1, Prevote, "block_hash_1", 1))
     .then(submit_grandpa_vote(2, Prevote, "block_hash_1", 1))
@@ -189,13 +189,13 @@ module test_grandpa_supermajority {
     .then(submit_grandpa_vote(6, Precommit, "block_hash_1", 1))
     .then(finalize_block("block_hash_1", 1))
     .expect(and {
-      finalized_blocks.contains(1),
-      validators.keys().size() == 7,
-      pending_votes.filter(v => and {
+      state_grandpa.finalized_blocks.contains(1),
+      state_safrole.validators.keys().size() == 7,
+      state_grandpa.pending_votes.filter(v => and {
         v.vote_type == Prevote,
         v.target_number == 1
       }).size() == 7,
-      pending_votes.filter(v => and {
+      state_grandpa.pending_votes.filter(v => and {
         v.vote_type == Precommit,
         v.target_number == 1
       }).size() == 7
@@ -211,7 +211,7 @@ module test_grandpa_supermajority {
     .then(register_validator("validator4", MIN_VALIDATOR_STAKE))
     .then(register_validator("validator5", MIN_VALIDATOR_STAKE))
     .then(produce_block)
-    // Exactly minimum validators needed for threshold
+    // Exactly minimum state_safrole.validators needed for threshold
     .then(submit_grandpa_vote(0, Prevote, "block_hash_1", 1))
     .then(submit_grandpa_vote(1, Prevote, "block_hash_1", 1))
     .then(submit_grandpa_vote(2, Prevote, "block_hash_1", 1))
@@ -224,10 +224,10 @@ module test_grandpa_supermajority {
     .then(submit_grandpa_vote(4, Precommit, "block_hash_1", 1))
     .then(finalize_block("block_hash_1", 1))
     .expect(and {
-      finalized_blocks.contains(1),
-      validators.keys().size() == 5,
-      validators.keys().forall(i => validators.get(i).state == ValidatorActive),
-      pending_votes.filter(v => v.target_number == 1).size() == 10  // 5 prevotes + 5 precommits
+      state_grandpa.finalized_blocks.contains(1),
+      state_safrole.validators.keys().size() == 5,
+      state_safrole.validators.keys().forall(i => state_safrole.validators.get(i).state == ValidatorActive),
+      state_grandpa.pending_votes.filter(v => v.target_number == 1).size() == 10  // 5 prevotes + 5 precommits
     })
   }
 
@@ -257,12 +257,12 @@ module test_grandpa_supermajority {
     .then(submit_grandpa_vote(4, Precommit, "block_hash_1", 1))
     .then(finalize_block("block_hash_1", 1))
     .expect(and {
-      finalized_blocks.contains(1),
-      pending_votes.filter(v => and {
+      state_grandpa.finalized_blocks.contains(1),
+      state_grandpa.pending_votes.filter(v => and {
         v.vote_type == Prevote,
         v.target_number == 1
       }).size() == 7,
-      pending_votes.filter(v => and {
+      state_grandpa.pending_votes.filter(v => and {
         v.vote_type == Precommit,
         v.target_number == 1
       }).size() == 5
@@ -283,7 +283,7 @@ module test_grandpa_supermajority {
     })
   }
 
-  // Test: Byzantine fault tolerance (1/3 malicious validators)
+  // Test: Byzantine fault tolerance (1/3 malicious state_safrole.validators)
   run test_byzantine_fault_tolerance = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
@@ -297,7 +297,7 @@ module test_grandpa_supermajority {
     .then(register_validator("validator9", MIN_VALIDATOR_STAKE))
     .then(produce_block)
     .then(produce_block)
-    // Simulate 1/3 Byzantine validators (3 out of 9) voting maliciously
+    // Simulate 1/3 Byzantine state_safrole.validators (3 out of 9) voting maliciously
     .then(submit_grandpa_vote(0, Prevote, "block_hash_1", 1))  // Honest
     .then(submit_grandpa_vote(1, Prevote, "block_hash_1", 1))  // Honest
     .then(submit_grandpa_vote(2, Prevote, "block_hash_1", 1))  // Honest
@@ -315,14 +315,14 @@ module test_grandpa_supermajority {
     .then(submit_grandpa_vote(5, Precommit, "block_hash_1", 1))
     .then(finalize_block("block_hash_1", 1))
     .expect(and {
-      finalized_blocks.contains(1),
-      not(finalized_blocks.contains(2)),
+      state_grandpa.finalized_blocks.contains(1),
+      not(state_grandpa.finalized_blocks.contains(2)),
       // Honest majority (6 votes) should prevail over Byzantine minority (3 votes)
-      pending_votes.filter(v => and {
+      state_grandpa.pending_votes.filter(v => and {
         v.vote_type == Prevote,
         v.target_number == 1
       }).size() == 6,
-      pending_votes.filter(v => and {
+      state_grandpa.pending_votes.filter(v => and {
         v.vote_type == Prevote,
         v.target_number == 2
       }).size() == 3

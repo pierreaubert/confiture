@@ -7,8 +7,8 @@ module test_funds_conservation_block {
     .then(produce_block)
     .expect(
       (
-        accounts.keys().fold(0, (s,k) => s + accounts.get(k)) +
-        services.keys().fold(0, (s,id) => s + services.get(id).balance)
+        state_basic.accounts.keys().fold(0, (s,k) => s + state_basic.accounts.get(k)) +
+        state_basic.services.keys().fold(0, (s,id) => s + state_basic.services.get(id).balance)
       ) == 25000
     )
   }

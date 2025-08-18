@@ -20,27 +20,27 @@ module test_work_package_flow {
     .then(refine_work_package(0))
     .then(accumulate_work_results(Set(0)))
     .expect(and {
-      work_results.keys().contains(0),
-      work_results.get(0).success,
-      work_packages.keys().contains(0),
-      // After refinement + accumulation, jam_state_root updated to "state_accumulated"
-      jam_state_root == "state_accumulated",
-      cores.get(work_results.get(0).core_index).state == Available
+      state_core.work_results.keys().contains(0),
+      state_core.work_results.get(0).success,
+      state_core.work_packages.keys().contains(0),
+      // After refinement + accumulation, state_chain.jam_state_root updated to "state_accumulated"
+      state_chain.jam_state_root == "state_accumulated",
+      state_core.cores.get(state_core.work_results.get(0).core_index).state == Available
     })
   }
 
   // Test: Cannot submit work package for inactive / missing service
   run test_submit_work_package_invalid_service = {
     init
-    // No service deployed, should fail guard; pending_work_packages remains empty
+    // No service deployed, should fail guard; state_core.pending_work_packages remains empty
     .then(submit_work_package(0, wi_set, "auth"))
-    .expect(pending_work_packages.size() == 0)
+    .expect(state_core.pending_work_packages.size() == 0)
   }
 
   // Test: Refine cannot run on non-existent package
   run test_refine_nonexistent_package = {
     init
     .then(refine_work_package(999))
-    .expect(not(work_results.keys().contains(999)))
+    .expect(not(state_core.work_results.keys().contains(999)))
   }
 }

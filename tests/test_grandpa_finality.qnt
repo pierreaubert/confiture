@@ -11,9 +11,9 @@ module test_grandpa_finality {
     .then(submit_grandpa_vote(1, Prevote, "block_hash", 1))
     .then(finalize_block("block_hash", 1))
     .expect(and {
-      finalized_blocks.contains(1),
-      grandpa_round >= 1,
-      finality_justifications.keys().contains(1)
+      state_grandpa.finalized_blocks.contains(1),
+      state_grandpa.grandpa_round >= 1,
+      state_pvm.finality_justifications.keys().contains(1)
     })
   }
 }

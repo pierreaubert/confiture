@@ -9,6 +9,6 @@ module test_refine_twice_effect {
     }), "authR"))
     .then(refine_work_package(0))
     .then(refine_work_package(0))
-    .expect(work_results.keys().size() == 1)
+    .expect(state_core.work_results.keys().size() == 1)
   }
 }

@@ -10,7 +10,7 @@ module test_attack_simulation {
     .then(submit_service_call("alice", 1, "transfer", 1000, 1))
     .then(submit_service_call("alice", 1, "transfer", 1000, 1))  // Double spend attempt
     .expect(and {
-      pending_calls.size() == 2,
+      state_basic.pending_calls.size() == 2,
       // System should detect conflicting transactions
       true  // Placeholder for actual double-spend detection logic
     })

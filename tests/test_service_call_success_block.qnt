@@ -6,8 +6,8 @@ module test_service_call_success_block {
     .then(submit_service_call("alice", 0, "methodX", 100, 2)) // cost 200
     .then(produce_block)
     .expect(and {
-      blocks.get(1).extrinsics.size() == 1,
-      accounts.get("alice") == 10000 - 2000 - 200
+      state_blockchain.blocks.get(1).extrinsics.size() == 1,
+      state_basic.accounts.get("alice") == 10000 - 2000 - 200
     })
   }
 }

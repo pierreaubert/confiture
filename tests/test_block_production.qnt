@@ -8,11 +8,11 @@ module test_block_production {
     .then(submit_service_call("alice", 0, "methodX", 100, 2)) // cost 200
     .then(produce_block)
     .expect(and {
-      current_block == 1,
-      blocks.keys().contains(1),
+      state_basic.current_block == 1,
+      state_blockchain.blocks.keys().contains(1),
       // Extrinsics root stubbed, but at least one extrinsic should have been added
-      blocks.get(1).extrinsics.size() == 1,
-      accounts.get("alice") == 10000 - 1500 - 200
+      state_blockchain.blocks.get(1).extrinsics.size() == 1,
+      state_basic.accounts.get("alice") == 10000 - 1500 - 200
     })
   }
 
@@ -24,10 +24,10 @@ module test_block_production {
     .then(submit_service_call("alice", 0, "expensive", 9000, 5)) // cost 45000
     .then(produce_block)
     .expect(and {
-      current_block == 1,
+      state_basic.current_block == 1,
       // Call should not have executed nor deducted
-      accounts.get("alice") == 10000 - 1500,
-      blocks.get(1).extrinsics.size() == 0
+      state_basic.accounts.get("alice") == 10000 - 1500,
+      state_blockchain.blocks.get(1).extrinsics.size() == 0
     })
   }
 }

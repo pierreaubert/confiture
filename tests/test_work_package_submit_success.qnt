@@ -7,6 +7,6 @@ module test_work_package_submit_success {
       id: 0, service_id: 0, payload: "payload0", gas_limit: 500,
       status: WorkPending, refine_output: "", accumulate_input: ""
     }), "auth_sig"))
-    .expect(pending_work_packages.size() == 1)
+    .expect(state_core.pending_work_packages.size() == 1)
   }
 }

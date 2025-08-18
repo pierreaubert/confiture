@@ -27,8 +27,8 @@ module test_accumulate_batch_limit {
     .then(refine_work_package(10))
     .then(accumulate_work_results(Set(0,1,2,3,4,5,6,7,8,9,10)))
     .expect(and {
-      jam_state_root != "state_accumulated",
-      work_results.keys().size() == 11
+      state_chain.jam_state_root != "state_accumulated",
+      state_core.work_results.keys().size() == 11
     })
   }
 }

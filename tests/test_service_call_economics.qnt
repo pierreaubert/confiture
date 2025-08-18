@@ -11,11 +11,11 @@ module test_service_call_economics {
     .then(submit_service_call("bob", 0, "m3", 10, 5))     // 50
     .expect(and {
       // total expected spend if executed
-      total_cost_for_caller(pending_calls, "alice") == 190,
-      total_cost_for_caller(pending_calls, "bob") == 50,
+      total_cost_for_caller(state_basic.pending_calls, "alice") == 190,
+      total_cost_for_caller(state_basic.pending_calls, "bob") == 50,
       // Charlie no calls -> 0
-      total_cost_for_caller(pending_calls, "charlie") == 0,
-      calls_affordable(pending_calls, accounts)
+      total_cost_for_caller(state_basic.pending_calls, "charlie") == 0,
+      calls_affordable(state_basic.pending_calls, state_basic.accounts)
     })
   }
 
@@ -25,6 +25,6 @@ module test_service_call_economics {
     .then(deploy_service("alice", "h", 1500, "r", "a", "m"))
     // Drain bob by hypothetical large call he can't afford
     .then(submit_service_call("bob", 0, "overspend", 20000, 1)) // cost 20000 > 10000
-    .expect(not(calls_affordable(pending_calls, accounts)))
+    .expect(not(calls_affordable(state_basic.pending_calls, state_basic.accounts)))
   }
 }

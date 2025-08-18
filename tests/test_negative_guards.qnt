@@ -5,7 +5,7 @@ module test_negative_guards {
   run test_call_inactive_service = {
     init
     .then(submit_service_call("alice", 0, "methodZ", 10, 1))
-    .expect(pending_calls.size() == 0)
+    .expect(state_basic.pending_calls.size() == 0)
   }
 
   // Helper for creating too many work items
@@ -26,6 +26,6 @@ module test_negative_guards {
     init
     .then(deploy_service("alice", "h", 1500, "r", "a", "m"))
     .then(submit_work_package(0, big_set, "authX"))
-    .expect(pending_work_packages.size() == 0)
+    .expect(state_core.pending_work_packages.size() == 0)
   }
 }

@@ -7,6 +7,6 @@ module test_zero_gas_work_item {
       id: 0, service_id: 0, payload: "zero_gas", gas_limit: 0,
       status: WorkPending, refine_output: "", accumulate_input: ""
     }), "zg"))
-    .expect(pending_work_packages.size() == 1)
+    .expect(state_core.pending_work_packages.size() == 1)
   }
 }

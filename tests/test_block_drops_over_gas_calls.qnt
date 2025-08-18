@@ -7,8 +7,8 @@ module test_block_drops_over_gas_calls {
     .then(submit_service_call("alice", 0, "c2", MAX_GAS_PER_BLOCK / 2 + 1, 1))
     .then(produce_block)
     .expect(and {
-      blocks.get(1).extrinsics.size() == 0,
-      accounts.get("alice") == 10000 - MIN_SERVICE_BALANCE
+      state_blockchain.blocks.get(1).extrinsics.size() == 0,
+      state_basic.accounts.get("alice") == 10000 - MIN_SERVICE_BALANCE
     })
   }
 }

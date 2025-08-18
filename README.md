@@ -50,13 +50,12 @@ Then run various test scenarios:
 ```bash
 # Type check tests
 for t in tests/test_*.qnt; do
-    echo "Type checking $t"
-	quint typecheck "$t"
+	quint typecheck "$t" >/dev/null 2>&1 && echo "✅" $t || echo "❌" $t
 done
 
 # Run tests
 for t in tests/test_*.qnt; do
-	quint run "$t"
+	quint run "$t" >/dev/null 2>&1 && echo "✅" $t || echo "❌" $t
 done
 
 # Run random execution to find violations

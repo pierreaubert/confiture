@@ -7,10 +7,10 @@ module test_calls_affordable_true {
     .then(submit_service_call("alice", 0, "m2", 30, 3))   // 90
     .then(submit_service_call("bob", 0, "m3", 10, 5))     // 50
     .expect(and {
-      total_cost_for_caller(pending_calls, "alice") == 190,
-      total_cost_for_caller(pending_calls, "bob") == 50,
-      total_cost_for_caller(pending_calls, "charlie") == 0,
-      calls_affordable(pending_calls, accounts)
+      total_cost_for_caller(state_basic.pending_calls, "alice") == 190,
+      total_cost_for_caller(state_basic.pending_calls, "bob") == 50,
+      total_cost_for_caller(state_basic.pending_calls, "charlie") == 0,
+      calls_affordable(state_basic.pending_calls, state_basic.accounts)
     })
   }
 }
