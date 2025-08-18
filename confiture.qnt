@@ -980,14 +980,48 @@ module confiture {
     // Create new block header
     val new_header = create_block_header(parent_hash, new_block_number, new_state_root, new_entropy, new_timestamp, current_epoch)
 
+    // Generate guarantees from work package processing
+    val work_guarantees = packages_to_refine.map(pkg => {
+      work_package_hash: pkg.authorization,
+      core_index: pkg.core_assignment,
+      validator_index: pkg.core_assignment % validator_count,
+      signature: "guarantee_signature",
+      timeslot: current_slot
+    })
+
+    // Generate assurances for work package availability
+    val work_assurances = packages_to_refine.map(pkg => {
+      work_package_hash: pkg.authorization,
+      assurer_index: (pkg.core_assignment + 1) % validator_count,
+      signature: "assurance_signature",
+      bitfield: "availability_bitfield"
+    })
+
+    // Generate preimages for work package data
+    val work_preimages = packages_to_refine.map(pkg => {
+      hash: pkg.authorization,
+      data: pkg.authorization,
+      length: 32  // Fixed length for simplicity
+    })
+
+    // Generate availability attestations from validators
+    val availability_attestations = cores.keys().filter(core_id => 
+      cores.get(core_id).state == Occupied
+    ).map(core_id => {
+      core_index: core_id,
+      validator_index: core_id % validator_count,  // Assign validator based on core
+      availability_bitfield: "available_core",
+      signature: "attestation_sig_core"
+    })
+
     // Create new block
     val new_block = {
       header: new_header,
       extrinsics: service_call_extrinsics.union(pending_extrinsics),
-      guarantees: Set(),  // TODO: Add guarantees from work package processing
-      assurances: Set(),  // TODO: Add assurances
-      preimages: Set(),   // TODO: Add preimages
-      availability: Set() // TODO: Add availability attestations
+      guarantees: work_guarantees,
+      assurances: work_assurances,
+      preimages: work_preimages,
+      availability: availability_attestations
     }
 
     all {
