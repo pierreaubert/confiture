@@ -984,7 +984,7 @@ module confiture {
     val work_guarantees = packages_to_refine.map(pkg => {
       work_package_hash: pkg.authorization,
       core_index: pkg.core_assignment,
-      validator_index: pkg.core_assignment % validator_count,
+      validator_index: if (validator_count > 0) pkg.core_assignment % validator_count else 0,
       signature: "guarantee_signature",
       timeslot: current_slot
     })
@@ -992,7 +992,7 @@ module confiture {
     // Generate assurances for work package availability
     val work_assurances = packages_to_refine.map(pkg => {
       work_package_hash: pkg.authorization,
-      assurer_index: (pkg.core_assignment + 1) % validator_count,
+      assurer_index: if (validator_count > 0) (pkg.core_assignment + 1) % validator_count else 0,
       signature: "assurance_signature",
       bitfield: "availability_bitfield"
     })
@@ -1009,7 +1009,7 @@ module confiture {
       cores.get(core_id).state == Occupied
     ).map(core_id => {
       core_index: core_id,
-      validator_index: core_id % validator_count,  // Assign validator based on core
+      validator_index: if (validator_count > 0) core_id % validator_count else 0,  // Assign validator based on core
       availability_bitfield: "available_core",
       signature: "attestation_sig_core"
     })
