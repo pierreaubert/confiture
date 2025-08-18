@@ -48,9 +48,16 @@ brew install quint
 Then run various test scenarios:
 
 ```bash
-# Run basic deployment test
+# Type check tests
 for t in tests/test_*.qnt; do
-	quint run "$t.qnt"
+        echo "Type checking $t"
+	quint typecheck "$t"
+done
+
+# Run tests
+for t in tests/test_*.qnt; do
+	quint run "$t"
+done
 
 # Run random execution to find violations
 quint run confiture.qnt --max-steps=20

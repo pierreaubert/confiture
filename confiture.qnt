@@ -24,6 +24,7 @@ module confiture {
   }
 
   type ServiceState = ServiceInactive | ServiceActive | Suspended | Terminated
+
   type CoreState = Available | Occupied | Disputed
   type WorkItemStatus = WorkPending | InProgress | Refined | Accumulated | WorkFailed
 
