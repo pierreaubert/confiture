@@ -358,34 +358,34 @@ module confiture {
   // ============================================================================
   // Basic state variables
   var current_block: int
-  var services: int -> Service                    // Service registry (§2.2)
-  var accounts: str -> int                        // Account balances
-  var pending_calls: Set[ServiceCall]             // Pending service calls (§2.3)
+  var services: int -> Service                   // Service registry (§2.2)
+  var accounts: str -> int                       // Account balances
+  var pending_calls: Set[ServiceCall]            // Pending service calls (§2.3)
   var next_service_id: int
 
   // Core execution state (§2.1)
   var cores: int -> Core
-  var work_packages: int -> WorkPackage           // Work package registry (§3.1)
-  var work_results: int -> WorkResult             // Work results (§3.4)
+  var work_packages: int -> WorkPackage          // Work package registry (§3.1)
+  var work_results: int -> WorkResult            // Work results (§3.4)
   var pending_work_packages: Set[WorkPackage]
   var next_package_id: int
   var next_work_item_id: int
 
   // JAM Chain State (§4.1)
-  var jam_state_root: str                         // Global state root
-  var entropy_pool: str                           // Entropy accumulator (§4.3)
-  var validator_assignments: int -> Set[str]      // Core validator assignments (§5.1)
+  var jam_state_root: str                        // Global state root
+  var entropy_pool: str                          // Entropy accumulator (§4.3)
+  var validator_assignments: int -> Set[str]     // Core validator assignments (§5.1)
 
   // Blockchain state (§4.2)
-  var blocks: int -> Block                        // Block storage
-  var chain_head: int                             // Current chain head
-  var current_epoch: int                          // Current epoch (§4.2.6)
-  var pending_extrinsics: Set[Extrinsic]          // Extrinsic mempool (§4.4)
+  var blocks: int -> Block                       // Block storage
+  var chain_head: int                            // Current chain head
+  var current_epoch: int                         // Current epoch (§4.2.6)
+  var pending_extrinsics: Set[Extrinsic]         // Extrinsic mempool (§4.4)
   var next_extrinsic_id: int
 
   // SAFROLE consensus state (§6 SAFROLE)
-  var validators: int -> Validator                // Validator registry (§6.1)
-  var validator_count: int                        // Total number of validators
+  var validators: int -> Validator               // Validator registry (§6.1)
+  var validator_count: int                       // Total number of validators
   var tickets: str -> Ticket                     // Active tickets (§6.2)
   var pending_tickets: Set[Ticket]               // Tickets awaiting processing
   var current_slot: int                          // Current SAFROLE slot
@@ -424,6 +424,7 @@ module confiture {
 
   // ============================================================================
   // CONSTANTS
+  // TODO(pierre): replace with constant and move out
   // ============================================================================
 
   // Protocol constants (§1.2 Protocol Parameters)
@@ -432,27 +433,30 @@ module confiture {
   pure val TOTAL_CORES = 341                      // JAM protocol specifies 341 cores (§2.1)
   pure val CORE_INDICES = 0.to(TOTAL_CORES - 1)
   pure val MAX_WORK_ITEMS_PER_PACKAGE = 16        // Maximum work items per package (§3.1)
-  pure val VALIDATORS = Set("val1", "val2", "val3", "val4", "val5", "val6")  // Simplified validator set (§5.1)
+  pure val VALIDATORS = Set(
+       "val1", "val2", "val3",
+       "val4", "val5", "val6"
+  )                                               // Simplified validator set (§5.1)
 
   // SAFROLE constants (§6 SAFROLE Parameters)
   pure val SAFROLE_SLOT_DURATION = 6000           // 6 second slots (§6.2)
   pure val TICKETS_PER_EPOCH = 600                // Tickets issued per epoch (§6.2)
   pure val MIN_VALIDATOR_STAKE = 10000            // Minimum stake for validators (§6.1)
   pure val MAX_VALIDATORS = 1023                  // Maximum validator count (§6.1)
-  pure val VALIDATOR_ROTATION_PERIOD = 100       // Epochs between validator rotations (§6.3)
+  pure val VALIDATOR_ROTATION_PERIOD = 100        // Epochs between validator rotations (§6.3)
 
   // GRANDPA constants (§7 GRANDPA Parameters)
-  pure val GRANDPA_ROUND_DURATION = 30  // seconds per GRANDPA round (§7.3)
-  pure val GRANDPA_THRESHOLD = 5       // minimum votes needed for finalization (§7.2)
-  pure val FINALITY_THRESHOLD = 2                // 2/3 supermajority (§7.2)
+  pure val GRANDPA_ROUND_DURATION = 30            // seconds per GRANDPA round (§7.3)
+  pure val GRANDPA_THRESHOLD = 5                  // minimum votes needed for finalization (§7.2)
+  pure val FINALITY_THRESHOLD = 2                 // 2/3 supermajority (§7.2)
 
   // PVM constants (§8 PVM Parameters)
   pure val PVM_MAX_MEMORY = 1048576               // 1MB max memory per program (§8.2)
   pure val PVM_MAX_STACK_SIZE = 1024              // Max stack depth (§8.2)
-  pure val PVM_GAS_PER_INSTRUCTION = 1           // Base gas cost per instruction (§8.4)
+  pure val PVM_GAS_PER_INSTRUCTION = 1            // Base gas cost per instruction (§8.4)
 
   // Economic constants (§10 Economics)
-  pure val BLOCK_REWARD = 1000                   // Reward for block production (§10.2)
+  pure val BLOCK_REWARD = 1000                    // Reward for block production (§10.2)
 
   // ============================================================================
   // HELPER FUNCTIONS
@@ -464,6 +468,7 @@ module confiture {
          .fold(0, (acc, call) => acc + call.gas_limit * call.gas_price)
 
   // Check if a set of calls can be afforded by all callers (§2.3 Service Call Economics)
+  // TODO(pierre): replace with all users
   pure def calls_affordable(calls: Set[ServiceCall], account_balances: str -> int): bool =
     Set("alice", "bob", "charlie").forall(caller =>
       account_balances.get(caller) >= total_cost_for_caller(calls, caller)
@@ -556,9 +561,10 @@ module confiture {
   // Conservation of funds - total money in system should remain constant
   val total_funds =
     accounts.keys().fold(0, (sum, acc) => sum + accounts.get(acc)) +
-    services.keys().fold(0, (sum, id) => sum + services.get(id).balance)
+    services.keys().fold(0, (sum, id) => sum + services.get(id).balance) +
+    validators.keys().fold(0, (sum, id) => sum + validators.get(id).stake)
 
-  val funds_conservation = total_funds == 25000  // Initial total: 10000 + 10000 + 5000
+  val funds_conservation = total_funds == 35000  // Initial total: 10000 + 10000 + 5000 + 10000
 
   // Total system invariant
   val system_invariant = and {
@@ -1005,7 +1011,7 @@ module confiture {
     })
 
     // Generate availability attestations from validators
-    val availability_attestations = cores.keys().filter(core_id => 
+    val availability_attestations = cores.keys().filter(core_id =>
       cores.get(core_id).state == Occupied
     ).map(core_id => {
       core_index: core_id,
@@ -1083,7 +1089,7 @@ module confiture {
   action init = all {
     current_block' = 0,
     services' = Map(),
-    accounts' = Map("alice" -> 10000, "bob" -> 10000, "charlie" -> 5000),
+    accounts' = Map("alice" -> 10000, "bob" -> 10000, "charlie" -> 5000, "treasury" -> 10000),
     pending_calls' = Set(),
     next_service_id' = 1,
 
@@ -1252,7 +1258,8 @@ module confiture {
       // Canonical effect set ordering
       current_block' = current_block,
       services' = services.setBy(service_id, s => { ...s, state: Terminated, balance: 0 }),
-      accounts' = accounts.setBy(caller, balance => balance + service.balance),
+      // Return service balance to the owner to maintain funds conservation
+      accounts' = accounts.setBy(service.owner, balance => balance + service.balance),
       pending_calls' = pending_calls,
       next_service_id' = next_service_id,
       cores' = cores,
@@ -1303,26 +1310,23 @@ module confiture {
 
   // Register a new validator (§6.1 Validator Registration)
   action register_validator(public_key: str, stake: int): bool = {
-    val can_register = and {
-      stake >= MIN_VALIDATOR_STAKE,
-      validator_count < MAX_VALIDATORS,
-      not(validators.keys().exists(i => validators.get(i).public_key == public_key))
-    }
-    val new_validator = {
-      index: validator_count,
-      public_key: public_key,
-      state: ValidatorActive,
-      stake: stake,
-      core_assignments: Set(),
-      last_block_authored: 0
-    }
+    // Find an account with sufficient funds to pay for the stake
+    // TODO(pierre): replace with a real list of users
+    val staker_account = if (accounts.get("alice") >= stake) "alice"
+                        else if (accounts.get("bob") >= stake) "bob"
+                        else if (accounts.get("charlie") >= stake) "charlie"
+                        else ""
+    val can_pay = staker_account != ""
 
     all {
-      can_register,
+      stake >= MIN_VALIDATOR_STAKE,
+      validator_count < MAX_VALIDATORS,
+      not(validators.keys().exists(i => validators.get(i).public_key == public_key)),
+      can_pay,
       // Canonical effect set with actual updates
       current_block' = current_block,
       services' = services,
-      accounts' = accounts,
+      accounts' = accounts.setBy(staker_account, balance => balance - stake),
       pending_calls' = pending_calls,
       next_service_id' = next_service_id,
       cores' = cores,
@@ -1339,7 +1343,14 @@ module confiture {
       current_epoch' = current_epoch,
       pending_extrinsics' = pending_extrinsics,
       next_extrinsic_id' = next_extrinsic_id,
-      validators' = validators.put(validator_count, new_validator),
+      validators' = validators.put(validator_count, {
+        index: validator_count,
+        public_key: public_key,
+        state: ValidatorActive,
+        stake: stake,
+        core_assignments: Set(),
+        last_block_authored: 0
+      }),
       validator_count' = validator_count + 1,
       tickets' = tickets,
       pending_tickets' = pending_tickets,
@@ -2539,65 +2550,14 @@ module confiture {
     }
   }
 
-  // Charge gas for operation (§10.1 Gas Model)
-  action charge_gas(amount: int): bool = {
-    val can_charge = pvm_gas_used + amount <= MAX_GAS_PER_BLOCK
-    all {
-      can_charge,
-      pvm_gas_used' = pvm_gas_used + amount,
-      // Unchanged state (simplified)
-      current_block' = current_block,
-      services' = services,
-      accounts' = accounts,
-      pending_calls' = pending_calls,
-      next_service_id' = next_service_id,
-      cores' = cores,
-      work_packages' = work_packages,
-      work_results' = work_results,
-      pending_work_packages' = pending_work_packages,
-      next_package_id' = next_package_id,
-      next_work_item_id' = next_work_item_id,
-      jam_state_root' = jam_state_root,
-      entropy_pool' = entropy_pool,
-      validator_assignments' = validator_assignments,
-      blocks' = blocks,
-      chain_head' = chain_head,
-      current_epoch' = current_epoch,
-      pending_extrinsics' = pending_extrinsics,
-      next_extrinsic_id' = next_extrinsic_id,
-      validators' = validators,
-      validator_count' = validator_count,
-      tickets' = tickets,
-      pending_tickets' = pending_tickets,
-      current_slot' = current_slot,
-      entropy_accumulator' = entropy_accumulator,
-      finalized_blocks' = finalized_blocks,
-      grandpa_round' = grandpa_round,
-      pending_votes' = pending_votes,
-      finality_justifications' = finality_justifications,
-      pvm_programs' = pvm_programs,
-      pvm_contexts' = pvm_contexts,
-      data_blobs' = data_blobs,
-      data_segments' = data_segments,
-      next_blob_id' = next_blob_id,
-      availability_threshold' = availability_threshold,
-      disputes' = disputes,
-      next_dispute_id' = next_dispute_id,
-      slashing_events' = slashing_events,
-      scheduled_packages' = scheduled_packages,
-      scheduling_policy' = scheduling_policy,
-      parachains' = parachains,
-      xcmp_messages' = xcmp_messages,
-      next_xcmp_message_id' = next_xcmp_message_id
-    }
-  }
 
   // Distribute block rewards to validators (§10.2 Reward Distribution)
   action distribute_rewards(block_author: int, reward_amount: int): bool = {
     val can_distribute = and {
       validators.keys().contains(block_author),
       validators.get(block_author).state == ValidatorActive,
-      reward_amount > 0
+      reward_amount > 0,
+      accounts.get("treasury") >= reward_amount  // Treasury must have sufficient funds
     }
 
     val updated_validator = if (can_distribute) {
@@ -2612,7 +2572,9 @@ module confiture {
       // Canonical full effect set ordering
       current_block' = current_block,
       services' = services,
-      accounts' = accounts,
+      accounts' = if (can_distribute)
+        accounts.setBy("treasury", balance => balance - reward_amount)
+      else accounts,
       pending_calls' = pending_calls,
       next_service_id' = next_service_id,
       cores' = cores,
@@ -2725,12 +2687,6 @@ module confiture {
       nondet service_id = services.keys().oneOf()
       terminate_service(service_id, caller)
     },
-    // SAFROLE validator registration
-    all {
-      nondet public_key = Set("validator1", "validator2", "validator3").oneOf()
-      nondet stake = Set(MIN_VALIDATOR_STAKE, MIN_VALIDATOR_STAKE + 1000).oneOf()
-      register_validator(public_key, stake)
-    },
     // SAFROLE ticket submission
     all {
       validators.keys().size() > 0,
@@ -2759,6 +2715,27 @@ module confiture {
       not(finalized_blocks.contains(chain_head)),
       finalize_block("parent_hash", chain_head)
     },
+    // SAFROLE validator registration
+    all {
+      nondet public_key = Set("validator1", "validator2", "validator3").oneOf()
+      nondet stake = Set(MIN_VALIDATOR_STAKE).oneOf()
+      register_validator(public_key, stake)
+    },
+    // SAFROLE ticket submission
+    all {
+      validators.keys().size() > 0,
+      nondet validator_index = validators.keys().oneOf()
+      nondet slot_number = Set(current_slot + 1, current_slot + 2).oneOf()
+      submit_ticket(validator_index, slot_number, "entropy_input")
+    },
+    // GRANDPA voting
+    all {
+      validators.keys().size() > 0,
+      nondet voter_index = validators.keys().oneOf()
+      nondet vote_type = Set(Prevote, Precommit).oneOf()
+      nondet target_number = Set(0, chain_head).oneOf()
+      submit_grandpa_vote(voter_index, vote_type, "block_hash", target_number)
+    },
     // Validator assignment to cores
     all {
       validators.keys().size() >= TOTAL_CORES,
@@ -2769,17 +2746,113 @@ module confiture {
       current_epoch % VALIDATOR_ROTATION_PERIOD == 0,
       rotate_validator_set
     },
-    // Gas charging for operations
-    all {
-      nondet gas_amount = Set(100, 500, 1000).oneOf()
-      charge_gas(gas_amount)
-    },
     // Block reward distribution
     all {
       validators.keys().size() > 0,
       nondet block_author = validators.keys().oneOf()
       nondet reward = Set(BLOCK_REWARD, BLOCK_REWARD / 2).oneOf()
       distribute_rewards(block_author, reward)
+    },
+    // Gas charging for operations (inline to avoid action conflicts)
+    any {
+      all {
+        pvm_gas_used + 100 <= MAX_GAS_PER_BLOCK,
+        accounts.get("treasury") >= 100,
+        pvm_gas_used' = pvm_gas_used + 100,
+        // Keep all other state unchanged
+        current_block' = current_block,
+        services' = services,
+        accounts' = accounts,  // Gas is free for now to maintain funds conservation
+        validators' = validators,
+        validator_count' = validator_count,
+        pending_calls' = pending_calls,
+        next_service_id' = next_service_id,
+        cores' = cores,
+        work_packages' = work_packages,
+        work_results' = work_results,
+        pending_work_packages' = pending_work_packages,
+        next_package_id' = next_package_id,
+        next_work_item_id' = next_work_item_id,
+        jam_state_root' = jam_state_root,
+        entropy_pool' = entropy_pool,
+        validator_assignments' = validator_assignments,
+        blocks' = blocks,
+        chain_head' = chain_head,
+        current_epoch' = current_epoch,
+        pending_extrinsics' = pending_extrinsics,
+        next_extrinsic_id' = next_extrinsic_id,
+        tickets' = tickets,
+        pending_tickets' = pending_tickets,
+        current_slot' = current_slot,
+        entropy_accumulator' = entropy_accumulator,
+        finalized_blocks' = finalized_blocks,
+        grandpa_round' = grandpa_round,
+        pending_votes' = pending_votes,
+        finality_justifications' = finality_justifications,
+        pvm_programs' = pvm_programs,
+        pvm_contexts' = pvm_contexts,
+        data_blobs' = data_blobs,
+        data_segments' = data_segments,
+        next_blob_id' = next_blob_id,
+        availability_threshold' = availability_threshold,
+        disputes' = disputes,
+        next_dispute_id' = next_dispute_id,
+        slashing_events' = slashing_events,
+        scheduled_packages' = scheduled_packages,
+        scheduling_policy' = scheduling_policy,
+        parachains' = parachains,
+        xcmp_messages' = xcmp_messages,
+        next_xcmp_message_id' = next_xcmp_message_id
+      },
+      all {
+        pvm_gas_used + 500 <= MAX_GAS_PER_BLOCK,
+        accounts.get("treasury") >= 500,
+        pvm_gas_used' = pvm_gas_used + 500,
+        // Keep all other state unchanged
+        current_block' = current_block,
+        services' = services,
+        accounts' = accounts,  // Gas is free for now to maintain funds conservation
+        validators' = validators,
+        validator_count' = validator_count,
+        pending_calls' = pending_calls,
+        next_service_id' = next_service_id,
+        cores' = cores,
+        work_packages' = work_packages,
+        work_results' = work_results,
+        pending_work_packages' = pending_work_packages,
+        next_package_id' = next_package_id,
+        next_work_item_id' = next_work_item_id,
+        jam_state_root' = jam_state_root,
+        entropy_pool' = entropy_pool,
+        validator_assignments' = validator_assignments,
+        blocks' = blocks,
+        chain_head' = chain_head,
+        current_epoch' = current_epoch,
+        pending_extrinsics' = pending_extrinsics,
+        next_extrinsic_id' = next_extrinsic_id,
+        tickets' = tickets,
+        pending_tickets' = pending_tickets,
+        current_slot' = current_slot,
+        entropy_accumulator' = entropy_accumulator,
+        finalized_blocks' = finalized_blocks,
+        grandpa_round' = grandpa_round,
+        pending_votes' = pending_votes,
+        finality_justifications' = finality_justifications,
+        pvm_programs' = pvm_programs,
+        pvm_contexts' = pvm_contexts,
+        data_blobs' = data_blobs,
+        data_segments' = data_segments,
+        next_blob_id' = next_blob_id,
+        availability_threshold' = availability_threshold,
+        disputes' = disputes,
+        next_dispute_id' = next_dispute_id,
+        slashing_events' = slashing_events,
+        scheduled_packages' = scheduled_packages,
+        scheduling_policy' = scheduling_policy,
+        parachains' = parachains,
+        xcmp_messages' = xcmp_messages,
+        next_xcmp_message_id' = next_xcmp_message_id
+      }
     }
   }
 

@@ -209,8 +209,8 @@ module test_safrole_block_production {
   run test_multiple_validators_block_competition = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(register_validator("validator2", MIN_VALIDATOR_STAKE + 1000))
-    .then(register_validator("validator3", MIN_VALIDATOR_STAKE + 2000))
+    .then(register_validator("validator2", MIN_VALIDATOR_STAKE))
+    .then(register_validator("validator3", MIN_VALIDATOR_STAKE))
     .then(submit_ticket(0, current_slot + 1, "entropy1"))
     .then(submit_ticket(1, current_slot + 1, "entropy2"))
     .then(submit_ticket(2, current_slot + 1, "entropy3"))

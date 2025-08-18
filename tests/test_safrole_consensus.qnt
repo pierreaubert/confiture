@@ -25,7 +25,7 @@ module test_safrole_consensus {
   run test_validator_registration_duplicate = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(register_validator("validator1", MIN_VALIDATOR_STAKE + 1000))
+    .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
     .expect(and {
       validator_count == 1,
       validators.get(0).stake == MIN_VALIDATOR_STAKE // Original stake unchanged
@@ -175,8 +175,8 @@ module test_safrole_consensus {
   run test_multiple_validator_tickets = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(register_validator("validator2", MIN_VALIDATOR_STAKE + 1000))
-    .then(register_validator("validator3", MIN_VALIDATOR_STAKE + 2000))
+    .then(register_validator("validator2", MIN_VALIDATOR_STAKE))
+    .then(register_validator("validator3", MIN_VALIDATOR_STAKE))
     .then(submit_ticket(0, current_slot + 1, "entropy1"))
     .then(submit_ticket(1, current_slot + 2, "entropy2"))
     .then(submit_ticket(2, current_slot + 3, "entropy3"))

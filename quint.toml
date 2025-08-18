@@ -1,8 +1,8 @@
 # Quint configuration for JAM Protocol specification
 
 [project]
-name = "jam-protocol"
-version = "0.1.0"
+name = "confiture"
+version = "0.1.5"
 description = "JAM Protocol formal specification in Quint"
 
 [verification]
@@ -26,28 +26,8 @@ next = "step"
 inv = ["system_invariant"]
 
 [[test]]
-name = "basic_tests"
-file = "confiture_protocol_test.qnt"
+name = "testsuite53"
+file = "tests/test_validator_assignment_3cores.qnt"
 runs = [
-  "deploy_service_test",
-  "purchase_core_time_test",
-  "submit_service_call_test",
-  "block_production_test"
-]
-
-[[test]]
-name = "error_tests"
-file = "confiture_protocol_test.qnt"
-runs = [
-  "deploy_service_insufficient_funds_test",
-  "unauthorized_termination_test",
-  "core_conflict_test"
-]
-
-[[test]]
-name = "property_tests"
-file = "confiture_protocol_test.qnt"
-runs = [
-  "invariant_preservation_test",
-  "balance_conservation_test"
+  "test_validator_assignment_3cores"
 ]

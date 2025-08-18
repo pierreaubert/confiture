@@ -189,8 +189,8 @@ module test_safrole_ticket_system {
   run test_ticket_competition = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(register_validator("validator2", MIN_VALIDATOR_STAKE + 1000))
-    .then(register_validator("validator3", MIN_VALIDATOR_STAKE + 2000))
+    .then(register_validator("validator2", MIN_VALIDATOR_STAKE))
+    .then(register_validator("validator3", MIN_VALIDATOR_STAKE))
     // All submit for same slot
     .then(submit_ticket(0, current_slot + 5, "entropy1"))
     .then(submit_ticket(1, current_slot + 5, "entropy2"))

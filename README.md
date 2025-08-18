@@ -62,6 +62,12 @@ done
 # Run random execution to find violations
 quint run confiture.qnt --max-steps=20
 
+# Increase number of samples
+quint run confiture.qnt --max-steps=20 --max-samples=100000
+
+# Add invariant checking
+quint run confiture.qnt --max-steps=20 --max-samples=100000 --invariant=system_invariant
+
 # Run Apalache and verify
 quint verify confiture.qnt
 ```
