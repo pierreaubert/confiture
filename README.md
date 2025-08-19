@@ -31,6 +31,21 @@ JAM is a trustless supercomputer that combines elements from both Polkadot and E
    - Core schedules have no time conflicts
    - Gas limits are enforced per block
 
+## Divergence with the JAM protocol
+
+- All the id are integers. That make it easy to generate counters which you cannot do with strings in Quint.
+
+### Added constraints and restrictions
+
+- Number of validators is limited to a low number (configurable).
+- Timestamp are not modelled properly
+- Seals are not computed
+- Funds are pre-defined with some users (Alive, Bob, Charlie, Treasury, ...)
+
+### Known issues
+
+- too many constants and random numbers in the Quint specifications esp. for gaz.
+
 ## Running Tests
 
 To run the specification and tests, you'll need to install Quint:

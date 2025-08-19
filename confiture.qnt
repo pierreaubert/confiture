@@ -186,17 +186,16 @@ module confiture {
 
   // SAFROLE ticket for block production (§6.2 Ticket System)
   type Ticket = {
-    id: str,
+    id: int,
     validator_index: int,
     slot_number: int,
     status: TicketStatus,
-    entropy_input: str,
     signature: str
   }
 
   // Block seal containing SAFROLE proof (§6.3 Block Sealing)
   type SafroleSeal = {
-    ticket_id: str,
+    ticket_id: int,
     validator_signature: str,
     entropy_proof: str,
     slot_number: int
@@ -505,9 +504,8 @@ module confiture {
          .fold(0, (acc, call) => acc + call.gas_limit * call.gas_price)
 
   // Check if a set of calls can be afforded by all callers (§2.3 Service Call Economics)
-  // TODO(pierre): replace with all users
   pure def calls_affordable(calls: Set[ServiceCall], account_balances: str -> int): bool =
-    Set("alice", "bob", "charlie").forall(caller =>
+    account_balances.keys().forall(caller =>
       account_balances.get(caller) >= total_cost_for_caller(calls, caller)
     )
 
@@ -1121,7 +1119,7 @@ module confiture {
   action register_validator(public_key: str, stake: int): bool = {
     val can_register = and {
       stake >= MIN_VALIDATOR_STAKE,
-      state_basic.accounts.get("alice") >= stake
+      state_basic.accounts.keys().exists(account => state_basic.accounts.get(account) >= stake)
     }
     val updated_validator = {
       index: state_safrole.validator_count,
@@ -1133,7 +1131,8 @@ module confiture {
     }
     all {
       can_register,
-      state_basic' = { ...state_basic, accounts: state_basic.accounts.setBy("alice", balance => balance - stake) },
+      nondet funding_account = state_basic.accounts.keys().filter(account => state_basic.accounts.get(account) >= stake).oneOf()
+      state_basic' = { ...state_basic, accounts: state_basic.accounts.setBy(funding_account, balance => balance - stake) },
       state_core' = state_core,
       state_chain' = state_chain,
       state_blockchain' = state_blockchain,
@@ -1151,19 +1150,19 @@ module confiture {
   }
 
   // Submit a SAFROLE ticket (§6.2 Ticket Submission)
-  action submit_ticket(validator_index: int, slot_number: int, entropy_input: str): bool = {
+  action submit_ticket(validator_index: int, slot_number: int): bool = {
     val can_submit = and {
       state_safrole.validators.keys().contains(validator_index),
       state_safrole.validators.get(validator_index).state == ValidatorActive,
       slot_number > state_safrole.current_slot
     }
-    val ticket_id = "ticket_123"  // Simplified for syntax correctness
+    val ticket_id = validator_index * MAX_VALIDATORS + slot_number
+
     val new_ticket = {
       id: ticket_id,
       validator_index: validator_index,
       slot_number: slot_number,
       status: TicketPending,
-      entropy_input: entropy_input,
       signature: "ticket_signature"
     }
 
@@ -1404,7 +1403,7 @@ module confiture {
       state_safrole.validators.keys().size() > 0,
       nondet validator_index = state_safrole.validators.keys().oneOf()
       nondet slot_number = Set(state_safrole.current_slot + 1, state_safrole.current_slot + 2).oneOf()
-      submit_ticket(validator_index, slot_number, "entropy_input")
+      submit_ticket(validator_index, slot_number)
     },
     // GRANDPA voting
     all {
@@ -1448,7 +1447,7 @@ module confiture {
       state_safrole.validators.keys().size() > 0,
       nondet validator_index = state_safrole.validators.keys().oneOf()
       nondet slot_number = Set(state_safrole.current_slot + 1, state_safrole.current_slot + 2).oneOf()
-      submit_ticket(validator_index, slot_number, "entropy_input")
+      submit_ticket(validator_index, slot_number)
     },
     // Additional GRANDPA voting
     all {

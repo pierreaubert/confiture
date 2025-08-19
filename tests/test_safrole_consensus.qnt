@@ -67,7 +67,7 @@ module test_safrole_consensus {
   run test_ticket_submission = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(submit_ticket(0, state_safrole.current_slot + 1, "entropy_data"))
+    .then(submit_ticket(0, state_safrole.current_slot + 1))
     .expect(and {
       state_safrole.tickets.size() == 1,
       state_safrole.tickets.exists(ticket => 
@@ -99,7 +99,7 @@ module test_safrole_consensus {
       state_scheduling' = state_scheduling,
       state_corechains' = state_corechains
     })
-    .then(submit_ticket(0, state_safrole.current_slot + 1, "entropy_data"))
+    .then(submit_ticket(0, state_safrole.current_slot + 1))
     .expect(state_safrole.tickets.size() == 0) // No ticket should be created
   }
 
@@ -107,7 +107,7 @@ module test_safrole_consensus {
   run test_ticket_submission_past_slot = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(submit_ticket(0, state_safrole.current_slot - 1, "entropy_data"))
+    .then(submit_ticket(0, state_safrole.current_slot - 1))
     .expect(state_safrole.tickets.size() == 0)
   }
 
@@ -117,9 +117,9 @@ module test_safrole_consensus {
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
     .then(register_validator("validator2", MIN_VALIDATOR_STAKE))
     .then(register_validator("validator3", MIN_VALIDATOR_STAKE))
-    .then(submit_ticket(0, state_safrole.current_slot + 1, "entropy1"))
-    .then(submit_ticket(1, state_safrole.current_slot + 2, "entropy2"))
-    .then(submit_ticket(2, state_safrole.current_slot + 3, "entropy3"))
+    .then(submit_ticket(0, state_safrole.current_slot + 1))
+    .then(submit_ticket(1, state_safrole.current_slot + 2))
+    .then(submit_ticket(2, state_safrole.current_slot + 3))
     .expect(and {
       state_safrole.tickets.size() == 3,
       state_safrole.validator_count == 3,
@@ -135,8 +135,8 @@ module test_safrole_consensus {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
     .then(register_validator("validator2", MIN_VALIDATOR_STAKE))
-    .then(submit_ticket(0, state_safrole.current_slot + 1, "entropy1"))
-    .then(submit_ticket(1, state_safrole.current_slot + 1, "entropy2")) // Same slot competition
+    .then(submit_ticket(0, state_safrole.current_slot + 1))
+    .then(submit_ticket(1, state_safrole.current_slot + 1)) // Same slot competition
     .then(all {
       // Mark one ticket as winning (simplified approach for Set operations)
       nondet winning_ticket = state_safrole.tickets.filter(t => t.validator_index == 0).oneOf()
@@ -169,7 +169,7 @@ module test_safrole_consensus {
   run test_entropy_accumulation = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(submit_ticket(0, state_safrole.current_slot + 1, "entropy_input"))
+    .then(submit_ticket(0, state_safrole.current_slot + 1))
     .then(all {
       // Simulate entropy accumulation
       state_chain' = { ...state_chain, 

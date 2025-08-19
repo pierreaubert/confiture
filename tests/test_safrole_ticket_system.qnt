@@ -5,7 +5,7 @@ module test_safrole_ticket_system {
   run test_ticket_lifecycle = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(submit_ticket(0, state_safrole.current_slot + 1, "entropy1"))
+    .then(submit_ticket(0, state_safrole.current_slot + 1))
     .then(all {
       // Mark ticket as winning (using Set operations)
       nondet winning_ticket = state_safrole.tickets.filter(t => t.validator_index == 0).oneOf()
@@ -54,7 +54,7 @@ module test_safrole_ticket_system {
   run test_ticket_expiration = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(submit_ticket(0, state_safrole.current_slot + 1, "entropy1"))
+    .then(submit_ticket(0, state_safrole.current_slot + 1))
     .then(all {
       // Advance slot beyond ticket validity and mark expired state_safrole.tickets
       nondet expired_ticket = state_safrole.tickets.oneOf()
@@ -88,9 +88,9 @@ module test_safrole_ticket_system {
     .then(register_validator("validator2", MIN_VALIDATOR_STAKE))
     .then(register_validator("validator3", MIN_VALIDATOR_STAKE))
     // Submit multiple state_safrole.tickets in same epoch
-    .then(submit_ticket(0, state_safrole.current_slot + 1, "entropy1"))
-    .then(submit_ticket(1, state_safrole.current_slot + 2, "entropy2"))
-    .then(submit_ticket(2, state_safrole.current_slot + 3, "entropy3"))
+    .then(submit_ticket(0, state_safrole.current_slot + 1))
+    .then(submit_ticket(1, state_safrole.current_slot + 2))
+    .then(submit_ticket(2, state_safrole.current_slot + 3))
     .expect(and {
       state_safrole.tickets.size() == 3,
       // All state_safrole.tickets should be for the same epoch (simplified)
@@ -105,9 +105,9 @@ module test_safrole_ticket_system {
     .then(register_validator("validator2", MIN_VALIDATOR_STAKE))
     .then(register_validator("validator3", MIN_VALIDATOR_STAKE))
     // All submit for same slot
-    .then(submit_ticket(0, state_safrole.current_slot + 5, "entropy1"))
-    .then(submit_ticket(1, state_safrole.current_slot + 5, "entropy2"))
-    .then(submit_ticket(2, state_safrole.current_slot + 5, "entropy3"))
+    .then(submit_ticket(0, state_safrole.current_slot + 5))
+    .then(submit_ticket(1, state_safrole.current_slot + 5))
+    .then(submit_ticket(2, state_safrole.current_slot + 5))
     .expect(and {
       state_safrole.tickets.size() == 3,
       // All state_safrole.tickets for same slot
@@ -123,11 +123,11 @@ module test_safrole_ticket_system {
   run test_ticket_entropy_validation = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(submit_ticket(0, state_safrole.current_slot + 1, "valid_entropy_input"))
+    .then(submit_ticket(0, state_safrole.current_slot + 1))
     .expect(and {
       state_safrole.tickets.size() == 1,
       state_safrole.tickets.exists(ticket => 
-        ticket.entropy_input == "valid_entropy_input"
+        ticket.validator_index == 0
       )
     })
   }
@@ -137,8 +137,8 @@ module test_safrole_ticket_system {
     init
     .then(register_validator("low_stake", MIN_VALIDATOR_STAKE))
     .then(register_validator("high_stake", MIN_VALIDATOR_STAKE * 10))
-    .then(submit_ticket(0, state_safrole.current_slot + 1, "entropy_low"))
-    .then(submit_ticket(1, state_safrole.current_slot + 1, "entropy_high"))
+    .then(submit_ticket(0, state_safrole.current_slot + 1))
+    .then(submit_ticket(1, state_safrole.current_slot + 1))
     .expect(and {
       state_safrole.tickets.size() == 2,
       // Both state_safrole.validators can submit state_safrole.tickets
@@ -153,7 +153,7 @@ module test_safrole_ticket_system {
   run test_block_authoring_rights = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(submit_ticket(0, state_safrole.current_slot + 1, "entropy1"))
+    .then(submit_ticket(0, state_safrole.current_slot + 1))
     .then(all {
       // Mark ticket as winning and update validator
       nondet winning_ticket = state_safrole.tickets.oneOf()
@@ -184,7 +184,7 @@ module test_safrole_ticket_system {
   run test_ticket_cleanup = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(submit_ticket(0, state_safrole.current_slot + 1, "entropy1"))
+    .then(submit_ticket(0, state_safrole.current_slot + 1))
     .then(all {
       // Simulate ticket usage and cleanup
       nondet used_ticket = state_safrole.tickets.oneOf()

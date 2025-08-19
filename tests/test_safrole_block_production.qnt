@@ -5,7 +5,7 @@ module test_safrole_block_production {
   run test_block_production_with_ticket = {
     init
     .then(register_validator("validator1", MIN_VALIDATOR_STAKE))
-    .then(submit_ticket(0, state_safrole.current_slot + 1, "entropy1"))
+    .then(submit_ticket(0, state_safrole.current_slot + 1))
     .then(all {
       // Mark ticket as winning and produce block
       nondet winning_ticket = state_safrole.tickets.oneOf()
