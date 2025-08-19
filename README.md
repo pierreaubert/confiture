@@ -45,6 +45,7 @@ JAM is a trustless supercomputer that combines elements from both Polkadot and E
 ### Known issues
 
 - too many constants and random numbers in the Quint specifications esp. for gaz.
+- too many invariant failures.
 
 ## Running Tests
 

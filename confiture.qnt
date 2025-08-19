@@ -524,8 +524,13 @@ module confiture {
     CORE_INDICES.filter(i => core_available(core_map.get(i)))
 
   // Create work context for current block (§3.1.2 Work Context Creation)
-  pure def create_work_context(block_num: int, entropy: str, state_root: str): WorkContext =
-    { block_number: block_num, timestamp: block_num * 6000, entropy: entropy, prior_state_root: state_root }
+  pure def create_work_context(block_num: int, entropy: str, state_root: str, timestamp: int): WorkContext =
+  {
+    block_number: block_num,
+    timestamp: timestamp,
+    entropy: entropy,
+    prior_state_root: state_root
+  }
 
   // ============================================================================
   // Create genesis block (§4.2 Genesis Block)
@@ -677,16 +682,20 @@ module confiture {
       available_core_set.size() > 0
     }
     val selected_core = if (can_submit and available_core_set.size() > 0) available_core_set.fold(0, (acc, core) => core) else 0
+    nondet rand_ts = 1.to(100).oneOf()
+    val timestamp = service_id * SAFROLE_SLOT_DURATION + rand_ts
+    nondet rand_gaz_limit = 1000.to(10000).oneOf()
+    nondet rand_gaz_consumed = 100.to(200).oneOf()
     val new_package = {
       id: state_core.next_package_id,
       service_id: service_id,
       work_items: work_items,
       authorization: authorization,
-      context: create_work_context(service_id, authorization, "context_data"),
+      context: create_work_context(service_id, authorization, "context_data", timestamp),
       status: WorkPending,
       core_assignment: selected_core,
-      gas_limit: 1000,
-      gas_consumed: 0
+      gas_limit: rand_gaz_limit,
+      gas_consumed: rand_gaz_consumed
     }
 
     all {
@@ -714,12 +723,43 @@ module confiture {
   action refine_work_package(package_id: int): bool = {
     val package_exists = state_core.pending_work_packages.exists(pkg => pkg.id == package_id)
     val work_package = if (package_exists)
-      state_core.pending_work_packages.filter(pkg => pkg.id == package_id).fold({id: 0, service_id: 0, work_items: Set(), authorization: "", context: {block_number: 0, timestamp: 0, entropy: "", prior_state_root: ""}, status: WorkPending, core_assignment: 0, gas_limit: 0, gas_consumed: 0}, (acc, pkg) => pkg)
-      else { id: 0, service_id: 0, work_items: Set(), authorization: "", context: create_work_context(0, "", ""), status: WorkPending, core_assignment: 0, gas_limit: 0, gas_consumed: 0 }
+      state_core.pending_work_packages.filter(pkg => pkg.id == package_id).fold({
+        id: 0,
+	service_id: 0,
+	work_items: Set(),
+	authorization: "",
+	context: {
+	  block_number: 0,
+	  timestamp: 0,
+	  entropy: "",
+	  prior_state_root: ""
+	},
+	status: WorkPending,
+	core_assignment: 0,
+	gas_limit: 0,
+	gas_consumed: 0
+      }, (acc, pkg) => pkg)
+      else {
+        id: 0,
+	service_id: 0,
+	work_items: Set(),
+	authorization: "",
+	context: create_work_context(0, "", "", 0),
+	status: WorkPending,
+	core_assignment: 0,
+	gas_limit: 0,
+	gas_consumed: 0
+      }
     val service_exists = state_basic.services.keys().contains(work_package.service_id)
     val service = if (service_exists) state_basic.services.get(work_package.service_id) else {
-      id: 0, owner: "", code_hash: "", state: ServiceInactive, balance: 0,
-      refine_code: "", accumulate_code: "", on_message_code: ""
+      id: 0,
+      owner: "",
+      code_hash: "",
+      state: ServiceInactive,
+      balance: 0,
+      refine_code: "",
+      accumulate_code: "",
+      on_message_code: ""
     }
     val can_refine = and {
       package_exists,
@@ -839,7 +879,7 @@ module confiture {
   // Produce a new JAM block with work package processing
   action produce_block: bool = {
     val new_block_number = state_basic.current_block + 1
-    val new_timestamp = new_block_number * 6000  // 6 second block time
+    val new_timestamp = new_block_number * SAFROLE_SLOT_DURATION
 
     // Process legacy service calls and convert to extrinsics
     val executable_calls = state_basic.pending_calls.filter(call =>
