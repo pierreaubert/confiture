@@ -1,0 +1,50 @@
+# Sassafras
+
+Sassafras Tutorial [part 1](https://research.web3.foundation/Polkadot/protocols/Sassafras/sassafras-part-1), [part 2](https://research.web3.foundation/Polkadot/protocols/Sassafras/sassafras-part-2), [part 3](https://research.web3.foundation/Polkadot/protocols/Sassafras/Sassafras-part-3).
+
+To demonstrate the correctness of Polkadot's Sassafras (Secret Assignment of Sequential
+Slots with Associated FRAS) consensus algorithm using the Quint specification language,
+we need to model its core state machine and mathematically verify its guarantees.
+
+## What are we verifying?
+
+Sassafras is a Single Secret Leader Election (SSLE) protocol designed to replace the older
+BABE protocol. It solves the following issues:
+
+- Forks (Multiple Leaders): In BABE, two validators can independently win the same slot.
+  Sassafras guarantees exactly one leader per slot.
+- Empty Slots (Zero Leaders): In BABE, a slot might have no winner. Sassafras pre-sorts
+  tickets to ensure continuous, constant-time block production.
+- Targeted DoS Attacks: Sassafras keeps the slot leader’s identity a secret until the moment
+  the block is published.
+
+Because Quint (based on TLA+) verifies distributed system logic rather than raw cryptography,
+we abstract the zk-SNARKs and Ring-VRFs. We assume the cryptographic primitives successfully
+sort the tickets, and we use Quint to prove that the resulting protocol rules strictly guarantee
+Safety (fork-freedom), Liveness (no empty slots), and Authorization.
+
+## Running Tests
+
+Checking invariants:
+```bash
+quint run sassafras.qnt --invariant no_forks_inv
+quint run sassafras.qnt --invariant constant_time_inv
+quint run sassafras.qnt --invariant valid_producer_inv
+```
+
+Proving:
+```bash
+quint verify sassafras.qnt --invariant valid_producer_inv --max-steps 100
+quint verify sassafras.qnt --invariant constant_time_inv --max-steps 100
+quint verify sassafras.qnt --invariant valid_producer_inv --max-steps 100
+```
+
+## Why this proves Sassafras is an upgrade over BABE
+
+If you were to rewrite the sort_tickets action in this code to reflect BABE's Probabilistic
+Leader Election—where VRF tickets are evaluated independently allowing Map().put(1, Set("Alice", "Bob"))
+running quint verify would immediately fail.
+
+It would spit out an error trace showing exactly how a chain fork occurred. By proving no_forks_inv under
+Sassafras's global sorting constraints, Quint formally confirms that short-term forks are strictly impossible
+by design.

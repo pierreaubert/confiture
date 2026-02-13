@@ -1,4 +1,5 @@
-// JAM Protocol Specification in Quint (0.7.2)
+// JAM Protocol Specification in Quint (0.7.2)                                   -*- quint -*-
+//
 // Join-Accumulate Machine: A trustless supercomputer combining Polkadot and Ethereum elements
 // State of the specs is alpha
 

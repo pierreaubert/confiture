@@ -1,3 +1,5 @@
+//                                                                          -*- quint -*-
+
 module sassafras {
   // --- TYPES & CONSTANTS ---
   type Validator = str
