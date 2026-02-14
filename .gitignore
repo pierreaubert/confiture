@@ -6,3 +6,8 @@ md
 package-lock.json
 node_modules
 *.log
+.claude
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+

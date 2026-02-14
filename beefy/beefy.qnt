@@ -1,52 +1,42 @@
 //                                                                          -*- quint -*-
 
-module beefy {
+module beefy_v2 {
   // --- TYPES & CONSTANTS ---
   type Validator = str
   type Payload = str
   type Commitment = { block_num: int, payload: Payload }
   type Vote = { commitment: Commitment, signer: Validator }
 
-  // We model a BFT network with 3 Honest Validators and 1 Malicious Validator (N=4).
+  // BEEFY targets finalized blocks.
+  // We model a source chain that produces finalized blocks.
+  type SourceChain = {
+    finalized_height: int,
+    payloads: int -> Payload
+  }
+
+  // The bridge exists on the target chain.
+  type Bridge = {
+    best_finalized_height: int,
+    accepted_payloads: int -> Payload
+  }
+
+  pure val VALIDATORS: Set[Validator] = Set("H1", "H2", "H3", "M1")
   pure val HONEST: Set[Validator] = Set("H1", "H2", "H3")
   pure val MALICIOUS: Set[Validator] = Set("M1")
-  pure val VALIDATORS: Set[Validator] = HONEST.union(MALICIOUS)
+  pure val THRESHOLD: int = 3 // 2f+1 for N=4
 
-  // Supermajority threshold: > 2/3 of the validator set.
-  // For N=4, 2/3 is 2.66. Thus, a valid BEEFY commitment strictly requires 3 signatures.
-  pure val THRESHOLD: int = 3
-
-  // Number of rounds (one per finalized block)
-  pure val NUM_ROUNDS: int = 3
-
-  // The valid MMR root for each block number
-  pure val VALID_PAYLOAD: int -> Payload = Map(1 -> "MMR_1", 2 -> "MMR_2", 3 -> "MMR_3")
-
-  // A forged MMR root that malicious validators may sign
-  pure val FAKE_PAYLOAD: Payload = "FAKE_MMR"
+  pure val MAX_HEIGHT: int = 4
 
   // --- STATE VARIABLES ---
-  var phase: str                                // "VOTE", "RELAY", "SLASH", "DONE"
-  var current_round: int                        // which block is being voted on (1..NUM_ROUNDS)
-  var votes: Set[Vote]                          // all votes cast across all rounds (persists)
-  var bridge_accepted: int -> Payload           // block_num -> accepted payload on bridge
-  var equivocations_detected: Set[Validator]    // validators caught equivocating
-  var slashed: Set[Validator]                   // validators removed from active set
-  var online: Set[Validator]                    // validators currently online
+  var source_chain: SourceChain
+  var bridge: Bridge
+  var votes: Set[Vote]                        // Message pool (signatures)
+  var validator_heights: Validator -> int     // Local view of each validator
+  var slashed: Set[Validator]
 
   // --- HELPER FUNCTIONS ---
 
-  // Safe accessor for VALID_PAYLOAD (avoids key error when current_round > NUM_ROUNDS)
-  pure def valid_payload_for(round: int): Payload =
-    if (VALID_PAYLOAD.keys().contains(round)) VALID_PAYLOAD.get(round)
-    else "NONE"
-
-  // Get the set of validators who signed a specific commitment
-  pure def signers_for(vs: Set[Vote], block: int, p: Payload): Set[Validator] =
-    vs.filter(v => v.commitment.block_num == block and v.commitment.payload == p)
-      .map(v => v.signer)
-
-  // Check if a validator signed two different payloads for any block
+  // Check if a validator signed two different payloads for the same block
   pure def has_equivocated(vs: Set[Vote], v: Validator): bool =
     vs.exists(v1 =>
       vs.exists(v2 =>
@@ -56,193 +46,151 @@ module beefy {
       )
     )
 
+  // Get signers for a specific commitment
+  pure def signers_for(vs: Set[Vote], block: int, p: Payload): Set[Validator] =
+    vs.filter(v => v.commitment.block_num == block and v.commitment.payload == p)
+      .map(v => v.signer)
+
   // --- INITIALIZATION ---
   action init = all {
-    phase' = "VOTE",
-    current_round' = 1,
+    source_chain' = { 
+      finalized_height: 0, 
+      payloads: Map(0 -> "GENESIS") 
+    },
+    bridge' = { 
+      best_finalized_height: 0, 
+      accepted_payloads: Map(0 -> "GENESIS") 
+    },
     votes' = Set(),
-    bridge_accepted' = Map(),
-    equivocations_detected' = Set(),
+    validator_heights' = VALIDATORS.mapBy(_ => 0),
     slashed' = Set(),
-    online' = VALIDATORS,
   }
 
-  // --- ACTIONS (STATE TRANSITIONS) ---
+  // --- ACTIONS ---
 
-  // Phase A — Honest validators sign the valid payload for the current round
-  action cast_honest_vote = {
-    nondet h = HONEST.oneOf()
+  // 1. Source Chain Finalizes a New Block
+  action source_finalize_block = {
+    val next_h = source_chain.finalized_height + 1
     all {
-      phase == "VOTE",
-      online.contains(h),
-      not(slashed.contains(h)),
-      votes' = votes.union(Set({
-        commitment: { block_num: current_round, payload: valid_payload_for(current_round) },
-        signer: h,
-      })),
-      phase' = phase,
-      current_round' = current_round,
-      bridge_accepted' = bridge_accepted,
-      equivocations_detected' = equivocations_detected,
+      next_h <= MAX_HEIGHT,
+      source_chain' = {
+        finalized_height: next_h,
+        payloads: source_chain.payloads.put(next_h, "MMR_".concat(valToString(next_h)))
+      },
+      bridge' = bridge,
+      votes' = votes,
+      validator_heights' = validator_heights,
       slashed' = slashed,
-      online' = online,
     }
   }
 
-  // Phase A — Malicious validators sign a nondeterministically chosen payload (valid or fake)
-  // Can be called multiple times with different payloads to model equivocation
-  action cast_malicious_vote = {
-    nondet m = MALICIOUS.oneOf()
-    nondet p = Set(valid_payload_for(current_round), FAKE_PAYLOAD).oneOf()
+  // 2. Honest Validator Signs a Commitment
+  action honest_sign(v: Validator) = {
+    val current_h = validator_heights.get(v)
+    val next_h = current_h + 1
     all {
-      phase == "VOTE",
-      online.contains(m),
-      not(slashed.contains(m)),
+      HONEST.contains(v),
+      not(slashed.contains(v)),
+      // Validator only signs if source chain has finalized a new block
+      source_chain.finalized_height >= next_h,
+      // In BEEFY, validators sign the mandatory block (simplified: every block)
       votes' = votes.union(Set({
-        commitment: { block_num: current_round, payload: p },
-        signer: m,
+        commitment: { block_num: next_h, payload: source_chain.payloads.get(next_h) },
+        signer: v
       })),
-      phase' = phase,
-      current_round' = current_round,
-      bridge_accepted' = bridge_accepted,
-      equivocations_detected' = equivocations_detected,
+      validator_heights' = validator_heights.set(v, next_h),
+      source_chain' = source_chain,
+      bridge' = bridge,
       slashed' = slashed,
-      online' = online,
     }
   }
 
-  // Phase B — End voting: nondeterministic transition modeling the relayer deciding to relay
-  action end_voting = all {
-    phase == "VOTE",
-    phase' = "RELAY",
-    current_round' = current_round,
-    votes' = votes,
-    bridge_accepted' = bridge_accepted,
-    equivocations_detected' = equivocations_detected,
-    slashed' = slashed,
-    online' = online,
+  // 3. Malicious Validator Equivocates
+  action malicious_equivocate(v: Validator) = {
+    nondet h = 1.to(MAX_HEIGHT).oneOf()
+    nondet p1 = "FAKE_1"
+    nondet p2 = "FAKE_2"
+    all {
+      MALICIOUS.contains(v),
+      not(slashed.contains(v)),
+      votes' = votes.union(Set(
+        { commitment: { block_num: h, payload: p1 }, signer: v },
+        { commitment: { block_num: h, payload: p2 }, signer: v }
+      )),
+      source_chain' = source_chain,
+      bridge' = bridge,
+      validator_heights' = validator_heights,
+      slashed' = slashed,
+    }
   }
 
-  // Phase C — Relayer picks a payload; if >= THRESHOLD unique signers, bridge accepts it
-  action relay_commitment = {
-    nondet p = Set(valid_payload_for(current_round), FAKE_PAYLOAD).oneOf()
-    val signers = signers_for(votes, current_round, p)
+  // 4. Relayer Submits Proof to Bridge
+  action relay_to_bridge = {
+    // Relayer picks a block and a payload that has enough signatures
+    nondet h = 1.to(MAX_HEIGHT).oneOf()
+    nondet p = votes.map(v => v.commitment.payload).oneOf()
+    val signers = signers_for(votes, h, p)
     all {
-      phase == "RELAY",
       signers.size() >= THRESHOLD,
-      not(bridge_accepted.keys().contains(current_round)),
-      bridge_accepted' = bridge_accepted.put(current_round, p),
-      phase' = "SLASH",
-      current_round' = current_round,
+      // Bridge only accepts blocks in order (simplified BEEFY)
+      h == bridge.best_finalized_height + 1,
+      bridge' = {
+        best_finalized_height: h,
+        accepted_payloads: bridge.accepted_payloads.put(h, p)
+      },
+      source_chain' = source_chain,
       votes' = votes,
-      equivocations_detected' = equivocations_detected,
+      validator_heights' = validator_heights,
       slashed' = slashed,
-      online' = online,
     }
   }
 
-  // Phase C — No payload has supermajority, skip to equivocation detection
-  action skip_relay = all {
-    phase == "RELAY",
-    // No payload reaches threshold for the current round
-    Set(valid_payload_for(current_round), FAKE_PAYLOAD).forall(p =>
-      signers_for(votes, current_round, p).size() < THRESHOLD
-    ),
-    phase' = "SLASH",
-    current_round' = current_round,
-    votes' = votes,
-    bridge_accepted' = bridge_accepted,
-    equivocations_detected' = equivocations_detected,
-    slashed' = slashed,
-    online' = online,
-  }
-
-  // Phase D — Detect equivocators, slash them, advance round
-  action slash_and_advance = {
-    // Detect ALL equivocators across all rounds
-    val new_equivocators = VALIDATORS.filter(v => has_equivocated(votes, v))
-    // Nondeterministically choose online set for the next round
-    nondet next_online = VALIDATORS.powerset().oneOf()
+  // 5. Slashing Detection
+  action detect_and_slash = {
+    val newly_detected = VALIDATORS.filter(v => has_equivocated(votes, v))
     all {
-      phase == "SLASH",
-      equivocations_detected' = new_equivocators,
-      slashed' = slashed.union(new_equivocators),
-      online' = next_online,
-      current_round' = current_round + 1,
-      phase' = if (current_round >= NUM_ROUNDS) "DONE" else "VOTE",
+      newly_detected.size() > 0,
+      slashed' = slashed.union(newly_detected),
+      source_chain' = source_chain,
+      bridge' = bridge,
       votes' = votes,
-      bridge_accepted' = bridge_accepted,
+      validator_heights' = validator_heights,
     }
   }
 
-  // Idle (stuttering step) — prevents deadlock after all rounds complete
-  action idle = all {
-    phase == "DONE",
-    phase' = phase,
-    current_round' = current_round,
-    votes' = votes,
-    bridge_accepted' = bridge_accepted,
-    equivocations_detected' = equivocations_detected,
-    slashed' = slashed,
-    online' = online,
-  }
-
-  // --- STATE TRANSITIONS ---
   action step = any {
-    cast_honest_vote,
-    cast_malicious_vote,
-    end_voting,
-    relay_commitment,
-    skip_relay,
-    slash_and_advance,
-    idle,
+    source_finalize_block,
+    nondet v = VALIDATORS.oneOf()
+    any {
+      honest_sign(v),
+      malicious_equivocate(v)
+    },
+    relay_to_bridge,
+    detect_and_slash
   }
 
-  // ==========================================
-  // --- INVARIANTS (CORRECTNESS PROPERTIES) ---
-  // ==========================================
+  // --- INVARIANTS ---
 
-  // Safety: Fake payload never accepted by bridge
-  val bridge_safety_inv =
-    bridge_accepted.keys().forall(b => bridge_accepted.get(b) != FAKE_PAYLOAD)
+  // Safety: Bridge never accepts a payload that doesn't match the source chain
+  val bridge_safety = bridge.accepted_payloads.keys().forall(h =>
+    bridge.accepted_payloads.get(h) == source_chain.payloads.get(h)
+  )
 
-  // Valid finality: Every accepted payload matches the expected valid payload for that block
-  val valid_finality_inv =
-    bridge_accepted.keys().forall(b => bridge_accepted.get(b) == VALID_PAYLOAD.get(b))
+  // Accountable Safety: If bridge_safety is violated, at least f+1 validators must have equivocated
+  // (In BEEFY, if an invalid payload is accepted, it must have >= THRESHOLD signatures)
+  val accountable_safety =
+    (exists h in bridge.accepted_payloads.keys(): 
+      bridge.accepted_payloads.get(h) != source_chain.payloads.get(h))
+    implies (VALIDATORS.filter(v => has_equivocated(votes, v)).size() >= 2)
 
-  // Honest validators never sign conflicting commitments for the same block
-  val honest_no_equivocation_inv =
-    HONEST.forall(h => not(has_equivocated(votes, h)))
+  // Honest signatures are always valid
+  val honest_integrity = votes.forall(v =>
+    HONEST.contains(v.signer) implies (v.commitment.payload == source_chain.payloads.get(v.commitment.block_num))
+  )
 
-  // Slashing safety: Only actual equivocators get slashed (no false positives)
-  val slashing_safety_inv =
-    slashed.forall(v => has_equivocated(votes, v))
+  // --- TEMPORAL PROPERTIES ---
 
-  // Equivocation accountability: By the end of the protocol, every equivocator has been detected.
-  // (Slashed validators cannot cast new votes, so no equivocations go undetected.)
-  val equivocation_accountability_inv =
-    (phase == "DONE") implies
-      VALIDATORS.forall(v =>
-        has_equivocated(votes, v) implies equivocations_detected.contains(v)
-      )
+  // Liveness: Bridge eventually catches up to source chain's finalized height
+  temporal val liveness = eventually(bridge.best_finalized_height == source_chain.finalized_height)
 
-  // Threshold integrity: Every accepted payload had >= THRESHOLD unique signers
-  val threshold_integrity_inv =
-    bridge_accepted.keys().forall(b =>
-      signers_for(votes, b, bridge_accepted.get(b)).size() >= THRESHOLD
-    )
-
-  // Quorum intersection: If two different payloads both have supermajority for the same block,
-  // some validator must have signed both (equivocation proof exists)
-  val quorum_intersection_inv =
-    1.to(NUM_ROUNDS).forall(b =>
-      Set(VALID_PAYLOAD.get(b), FAKE_PAYLOAD).forall(p1 =>
-        Set(VALID_PAYLOAD.get(b), FAKE_PAYLOAD).forall(p2 =>
-          (p1 != p2 and signers_for(votes, b, p1).size() >= THRESHOLD
-                    and signers_for(votes, b, p2).size() >= THRESHOLD)
-          implies
-            signers_for(votes, b, p1).intersect(signers_for(votes, b, p2)).size() > 0
-        )
-      )
-    )
 }
