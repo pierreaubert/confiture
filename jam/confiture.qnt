@@ -23,7 +23,7 @@ module confiture {
   type ServiceState = ServiceInactive | ServiceActive | Suspended | Terminated
 
   type CoreState = Available | Occupied | Disputed
-  type WorkItemStatus = WorkPending | InProgress | Refined | Accumulated | WorkFailed | WorkItemRefined | WorkItemAccumulated
+  type WorkItemStatus = WorkPending | InProgress | Refined | Accumulated | WorkFailed
   type WorkPackageStatus = WorkPackagePending | WorkPackageActive | WorkPackageCompleted | WorkPackageFailed
 
   // Core JAM Service definition with entry points (§2.2 Services)
@@ -49,7 +49,22 @@ module confiture {
     status: WorkItemStatus,
     core_assignment: int,
     gas_limit: int,
-    gas_consumed: int
+    gas_consumed: int,
+    accumulate_gas_limit: int,
+    is_available: bool           // Enhanced availability check (§5.5)
+  }
+
+  // Core Region - represents a scheduled time on a core (§13)
+  type CoreRegion = {
+    core_index: int,
+    service_id: int,
+    start_block: int,
+    end_block: int
+  }
+
+  type Reservation = {
+    service_id: int,
+    core_index: int
   }
 
   // Work Item - individual unit of work (§3.1.1 Work Items)
@@ -71,6 +86,7 @@ module confiture {
     refined_outputs: Set[str],
     accumulate_data: str,
     gas_used: int,
+    accumulate_gas_used: int,
     success: bool
   }
 
@@ -239,25 +255,26 @@ module confiture {
   // PVM program instruction (§8.1 PVM Instructions)
   type PvmInstruction = {
     opcode: PvmInstructionType,
-    operands: Set[int],
+    operands: List[int],           // RISC-V registers or immediates
     gas_cost: int
   }
 
   // PVM execution context (§8.2 PVM Execution Context)
   type PvmContext = {
-    program_counter: int,
-    stack: Set[int],
-    memory: int -> int,
-    gas_remaining: int,
+    pc: int,                       // Program Counter (§8.2.1)
+    registers: int -> int,         // Registers x0-x31 (§8.2.1)
+    memory: int -> int,            // 64-bit Address Space (§8.2.2)
+    gas_remaining: int,            // Gas (§8.2.3)
     execution_state: PvmExecutionState,
-    return_data: str
+    return_data: str,
+    service_id: int
   }
 
   // PVM program for service execution (§8.3 PVM Programs)
   type PvmProgram = {
+    service_id: int,
     bytecode: str,
-    instructions: Set[PvmInstruction],
-    entry_points: Set[str],        // refine, accumulate, on_message
+    instructions: int -> PvmInstruction, // PC -> Instruction
     gas_limit: int,
     memory_limit: int
   }
@@ -301,16 +318,16 @@ module confiture {
   type Dispute = {
     id: int,
     dispute_type: DisputeType,
-    target_validator: str,
+    target_validator_index: int,
     evidence: str,
     status: DisputeStatus,
-    initiated_by: str,
+    initiated_by_index: int,
     block_number: int,
-    resolution_votes: Set[str]
+    resolution_votes: Set[int]    // Validator indices who voted
   }
 
   type SlashingEvent = {
-    validator: str,
+    validator_index: int,
     amount: int,
     reason: DisputeType,
     block_number: int
@@ -354,6 +371,13 @@ module confiture {
     processed: bool
   }
 
+  type Message = {
+    sender_id: int,
+    recipient_id: int,
+    payload: str,
+    gas_limit: int
+  }
+
   // ============================================================================
   // STATE VARIABLES (§1.3 JAM State)
   // ============================================================================
@@ -364,7 +388,8 @@ module confiture {
     services: int -> Service,                    // Service registry (§2.2)
     accounts: str -> int,                        // Account balances
     pending_calls: Set[ServiceCall],             // Pending service calls (§2.3)
-    next_service_id: int
+    next_service_id: int,
+    message_queue: List[Message]                 // Inter-service message queue
   }
 
   // Core execution state grouping (§2.1)
@@ -413,9 +438,10 @@ module confiture {
   // PVM execution state grouping (§8 PVM)
   type StatePVM = {
     finality_justifications: int -> FinalityJustification, // GRANDPA justifications
-    pvm_programs: int -> PvmProgram,            // Deployed PVM programs
+    pvm_programs: int -> PvmProgram,            // Deployed PVM programs (by service_id)
     pvm_contexts: int -> PvmContext,            // Active PVM execution contexts
-    pvm_gas_used: int                           // Total PVM gas consumed
+    pvm_gas_used: int,                          // Total PVM gas consumed
+    next_context_id: int
   }
 
   // Data Availability state grouping (§11 Data Availability)
@@ -436,7 +462,8 @@ module confiture {
   // Advanced Scheduling state grouping (§13 Scheduling)
   type StateScheduling = {
     scheduled_packages: Set[ScheduledWorkPackage],
-    scheduling_policy: SchedulingPolicy
+    scheduling_policy: SchedulingPolicy,
+    core_regions: int -> CoreRegion              // Core assignments per timeslot
   }
 
   // CoreChains compatibility state grouping (§14 CoreChains)
@@ -461,11 +488,12 @@ module confiture {
 
   // ============================================================================
   // CONSTANTS
-  // TODO(pierre): replace with constant and move out
   // ============================================================================
 
   // Protocol constants (§1.2 Protocol Parameters)
   pure val MAX_GAS_PER_BLOCK = 15000000           // Maximum gas per block
+  pure val REFINE_GAS_LIMIT = 100000              // Example limit for refine
+  pure val ACCUMULATE_GAS_LIMIT = 1000            // Example limit for accumulate
   pure val MIN_SERVICE_BALANCE = 1000             // Minimum service balance (§2.2)
   pure val TOTAL_CORES = 341                      // JAM protocol specifies 341 cores (§2.1)
   pure val CORE_INDICES = 0.to(TOTAL_CORES - 1)
@@ -665,6 +693,41 @@ module confiture {
     }
   }
 
+  // Send a message between services (§2.2.1)
+  action send_message(sender_id: int, recipient_id: int, payload: str, gas_limit: int): bool = {
+    val sender_exists = state_basic.services.keys().contains(sender_id)
+    val recipient_exists = state_basic.services.keys().contains(recipient_id)
+    val can_send = and {
+      sender_exists,
+      recipient_exists,
+      state_basic.services.get(sender_id).balance >= gas_limit
+    }
+    val new_message = {
+      sender_id: sender_id,
+      recipient_id: recipient_id,
+      payload: payload,
+      gas_limit: gas_limit
+    }
+    all {
+      can_send,
+      state_basic' = {
+        ...state_basic,
+        services: state_basic.services.setBy(sender_id, s => { ...s, balance: s.balance - gas_limit }),
+        message_queue: state_basic.message_queue.append(new_message)
+      },
+      state_core' = state_core,
+      state_chain' = state_chain,
+      state_blockchain' = state_blockchain,
+      state_safrole' = state_safrole,
+      state_grandpa' = state_grandpa,
+      state_pvm' = state_pvm,
+      state_data_availability' = state_data_availability,
+      state_dispute' = state_dispute,
+      state_scheduling' = state_scheduling,
+      state_corechains' = state_corechains
+    }
+  }
+
   // Submit a work package for processing
   action submit_work_package(service_id: int, work_items: Set[WorkItem], authorization: str): bool = {
     val service_exists = state_basic.services.keys().contains(service_id)
@@ -696,7 +759,9 @@ module confiture {
       status: WorkPending,
       core_assignment: selected_core,
       gas_limit: rand_gaz_limit,
-      gas_consumed: rand_gaz_consumed
+      gas_consumed: rand_gaz_consumed,
+      accumulate_gas_limit: ACCUMULATE_GAS_LIMIT,
+      is_available: false
     }
 
     all {
@@ -707,6 +772,35 @@ module confiture {
         cores: state_core.cores.setBy(selected_core, core => { ...core, state: Occupied, current_package: state_core.next_package_id }),
         pending_work_packages: state_core.pending_work_packages.union(Set(new_package)),
         next_package_id: state_core.next_package_id + 1
+      },
+      state_chain' = state_chain,
+      state_blockchain' = state_blockchain,
+      state_safrole' = state_safrole,
+      state_grandpa' = state_grandpa,
+      state_pvm' = state_pvm,
+      state_data_availability' = state_data_availability,
+      state_dispute' = state_dispute,
+      state_scheduling' = state_scheduling,
+      state_corechains' = state_corechains
+    }
+  }
+
+  // Confirm availability of a work package (§5.5)
+  action confirm_availability(package_id: int): bool = {
+    val package_exists = state_core.work_packages.keys().contains(package_id)
+    val wp = if (package_exists) state_core.work_packages.get(package_id) else {
+      id: 0, service_id: 0, work_items: Set(), authorization: "", context: create_work_context(0, "", "", 0), status: WorkPending, core_assignment: 0, gas_limit: 0, gas_consumed: 0, accumulate_gas_limit: 0, is_available: false
+    }
+    // Simulate 2/3 supermajority verification
+    val has_supermajority = true 
+    all {
+      package_exists,
+      not(wp.is_available),
+      has_supermajority,
+      state_basic' = state_basic,
+      state_core' = {
+        ...state_core,
+        work_packages: state_core.work_packages.setBy(package_id, p => { ...p, is_available: true })
       },
       state_chain' = state_chain,
       state_blockchain' = state_blockchain,
@@ -738,7 +832,9 @@ module confiture {
 	status: WorkPending,
 	core_assignment: 0,
 	gas_limit: 0,
-	gas_consumed: 0
+	gas_consumed: 0,
+	accumulate_gas_limit: 0,
+	is_available: false
       }, (acc, pkg) => pkg)
       else {
         id: 0,
@@ -749,7 +845,9 @@ module confiture {
 	status: WorkPending,
 	core_assignment: 0,
 	gas_limit: 0,
-	gas_consumed: 0
+	gas_consumed: 0,
+	accumulate_gas_limit: 0,
+	is_available: false
       }
     val service_exists = state_basic.services.keys().contains(work_package.service_id)
     val service = if (service_exists) state_basic.services.get(work_package.service_id) else {
@@ -768,35 +866,100 @@ module confiture {
       service.state == ServiceActive,
       state_core.cores.get(work_package.core_assignment).state == Occupied
     }
-    // Simulate refine execution - in real implementation this would execute service.refine_code
+    // Simulate refine execution initialization (§3.2)
     val refined_items = work_package.work_items.map(wi =>
-      { ...wi, status: Refined, refine_output: "refined_output" }
+      { ...wi, status: InProgress }
     )
     val refined_package = { ...work_package, work_items: refined_items }
-    val work_result = {
-      package_id: package_id,
-      service_id: work_package.service_id,
-      core_index: work_package.core_assignment,
-      refined_outputs: refined_items.map(work_item => work_item.refine_output),
-      accumulate_data: "accumulate_input",
-      gas_used: package_gas_total(work_package.work_items),
-      success: true
+    
+    // Create a PVM context for each work item (simplified: one per package)
+    val new_ctx_id = state_pvm.next_context_id
+    val new_ctx = {
+      pc: 0,
+      registers: 0.to(31).mapBy(_ => 0),
+      memory: Map(),
+      gas_remaining: work_package.gas_limit,
+      execution_state: Running,
+      return_data: "",
+      service_id: work_package.service_id
     }
+
     all {
       can_refine,
       state_basic' = state_basic,
       state_core' = {
         ...state_core,
         work_packages: state_core.work_packages.put(package_id, refined_package),
-        work_results: state_core.work_results.put(package_id, work_result),
         pending_work_packages: state_core.pending_work_packages.exclude(Set(work_package)),
-        cores: state_core.cores.setBy(work_package.core_assignment, core => { ...core, state: Available, current_package: 0 })
+        // In this refined model, we don't complete refinement immediately
+        cores: state_core.cores.setBy(work_package.core_assignment, core => { ...core, current_package: package_id })
+      },
+      state_pvm' = {
+        ...state_pvm,
+        pvm_contexts: state_pvm.pvm_contexts.put(new_ctx_id, new_ctx),
+        next_context_id: new_ctx_id + 1
       },
       state_chain' = state_chain,
       state_blockchain' = state_blockchain,
       state_safrole' = state_safrole,
       state_grandpa' = state_grandpa,
-      state_pvm' = state_pvm,
+      state_data_availability' = state_data_availability,
+      state_dispute' = state_dispute,
+      state_scheduling' = state_scheduling,
+      state_corechains' = state_corechains
+    }
+  }
+
+  // Complete refinement after PVM execution is finished
+  action complete_refinement(package_id: int, context_id: int): bool = {
+    val package_exists = state_core.work_packages.keys().contains(package_id)
+    val pkg = if (package_exists) state_core.work_packages.get(package_id) else {
+      id: 0, service_id: 0, work_items: Set(), authorization: "", context: create_work_context(0, "", "", 0), status: WorkPending, core_assignment: 0, gas_limit: 0, gas_consumed: 0, accumulate_gas_limit: 0, is_available: false
+    }
+    val context_exists = state_pvm.pvm_contexts.keys().contains(context_id)
+    val ctx = if (context_exists) state_pvm.pvm_contexts.get(context_id) else {
+      pc: 0, registers: Map(), memory: Map(), gas_remaining: 0, execution_state: PvmFailed, return_data: "", service_id: 0
+    }
+    
+    val can_complete = and {
+      package_exists,
+      context_exists,
+      ctx.execution_state == Completed,
+      ctx.service_id == pkg.service_id
+    }
+
+    val refined_items = pkg.work_items.map(wi =>
+      { ...wi, status: Refined, refine_output: ctx.return_data }
+    )
+    val refined_package = { ...pkg, work_items: refined_items }
+    val work_result = {
+      package_id: package_id,
+      service_id: pkg.service_id,
+      core_index: pkg.core_assignment,
+      refined_outputs: refined_items.map(work_item => work_item.refine_output),
+      accumulate_data: "accumulate_input",
+      gas_used: pkg.gas_limit - ctx.gas_remaining,
+      accumulate_gas_used: pkg.accumulate_gas_limit / 2,
+      success: true
+    }
+
+    all {
+      can_complete,
+      state_basic' = state_basic,
+      state_core' = {
+        ...state_core,
+        work_packages: state_core.work_packages.put(package_id, refined_package),
+        work_results: state_core.work_results.put(package_id, work_result),
+        cores: state_core.cores.setBy(pkg.core_assignment, core => { ...core, state: Available, current_package: 0 })
+      },
+      state_pvm' = {
+        ...state_pvm,
+        pvm_contexts: state_pvm.pvm_contexts.keys().exclude(Set(context_id)).mapBy(k => state_pvm.pvm_contexts.get(k))
+      },
+      state_chain' = state_chain,
+      state_blockchain' = state_blockchain,
+      state_safrole' = state_safrole,
+      state_grandpa' = state_grandpa,
       state_data_availability' = state_data_availability,
       state_dispute' = state_dispute,
       state_scheduling' = state_scheduling,
@@ -807,8 +970,13 @@ module confiture {
   // Accumulate phase - process refined results on-chain
   action accumulate_work_results(result_ids: Set[int]): bool = {
     val results_exist = result_ids.forall(id => state_core.work_results.keys().contains(id))
+    val all_available = result_ids.forall(id => 
+      val result = state_core.work_results.get(id)
+      state_core.work_packages.get(result.package_id).is_available
+    )
     val can_accumulate = and {
       results_exist,
+      all_available,
       result_ids.size() > 0,
       result_ids.size() <= 10  // Limit accumulation batch size
     }
@@ -825,7 +993,7 @@ module confiture {
           val result = state_core.work_results.get(result_id)
           val package = packages.get(result.package_id)
           val accumulated_items = package.work_items.map(wi =>
-            if (wi.status == WorkItemRefined) { ...wi, status: WorkItemAccumulated } else wi
+            if (wi.status == Refined) { ...wi, status: Accumulated } else wi
           )
           packages.put(result.package_id, { ...package, work_items: accumulated_items })
         })
@@ -964,7 +1132,8 @@ module confiture {
           acc_map.setBy(call.caller, balance => balance - call.gas_limit * call.gas_price)
         ),
         pending_calls: state_basic.pending_calls.exclude(final_calls),
-        next_service_id: state_basic.next_service_id
+        next_service_id: state_basic.next_service_id,
+        message_queue: state_basic.message_queue
       },
       state_core' = state_core,
       state_chain' = { ...state_chain, jam_state_root: new_state_root, entropy_pool: new_entropy },
@@ -994,7 +1163,8 @@ module confiture {
       services: Map(),
       accounts: Map("alice" -> 10000, "bob" -> 10000, "charlie" -> 5000, "treasury" -> 10000),
       pending_calls: Set(),
-      next_service_id: 1
+      next_service_id: 1,
+      message_queue: []
     },
 
     state_core' = {
@@ -1064,7 +1234,8 @@ module confiture {
       finality_justifications: Map(),
       pvm_programs: Map(),
       pvm_contexts: Map(),
-      pvm_gas_used: 0
+      pvm_gas_used: 0,
+      next_context_id: 1
     },
 
     state_data_availability' = {
@@ -1082,7 +1253,8 @@ module confiture {
 
     state_scheduling' = {
       scheduled_packages: Set(),
-      scheduling_policy: DefaultScheduling
+      scheduling_policy: DefaultScheduling,
+      core_regions: Map()
     },
 
     state_corechains' = {
@@ -1115,6 +1287,41 @@ module confiture {
       state_data_availability' = state_data_availability,
       state_dispute' = state_dispute,
       state_scheduling' = state_scheduling,
+      state_corechains' = state_corechains
+    }
+  }
+
+  // Reserve core-time for a service (§13)
+  action reserve_core(service_id: int, core_idx: int): bool = {
+    val service_exists = state_basic.services.keys().contains(service_id)
+    val core_exists = CORE_INDICES.contains(core_idx)
+    val already_reserved = state_scheduling.core_regions.keys().contains(core_idx)
+    val can_reserve = and {
+      service_exists,
+      core_exists,
+      not(already_reserved)
+    }
+    val new_region = {
+      core_index: core_idx,
+      service_id: service_id,
+      start_block: state_basic.current_block,
+      end_block: state_basic.current_block + 10
+    }
+    all {
+      can_reserve,
+      state_basic' = state_basic,
+      state_core' = state_core,
+      state_chain' = state_chain,
+      state_blockchain' = state_blockchain,
+      state_safrole' = state_safrole,
+      state_grandpa' = state_grandpa,
+      state_pvm' = state_pvm,
+      state_data_availability' = state_data_availability,
+      state_dispute' = state_dispute,
+      state_scheduling' = {
+        ...state_scheduling,
+        core_regions: state_scheduling.core_regions.put(core_idx, new_region)
+      },
       state_corechains' = state_corechains
     }
   }
@@ -1303,23 +1510,139 @@ module confiture {
     }
   }
 
+  // Raise a dispute against a validator (§12.1)
+  action raise_dispute(reporter_index: int, target_index: int, d_type: DisputeType): bool = {
+    val reporter_exists = state_safrole.validators.keys().contains(reporter_index)
+    val target_exists = state_safrole.validators.keys().contains(target_index)
+    val can_raise = and {
+      reporter_exists,
+      target_exists,
+      reporter_index != target_index,
+      state_safrole.validators.get(reporter_index).state == ValidatorActive
+    }
+    val new_dispute = {
+      id: state_dispute.next_dispute_id,
+      dispute_type: d_type,
+      target_validator_index: target_index,
+      evidence: "evidence_data",
+      status: DisputeOpen,
+      initiated_by_index: reporter_index,
+      block_number: state_basic.current_block,
+      resolution_votes: Set(reporter_index)
+    }
+    all {
+      can_raise,
+      state_basic' = state_basic,
+      state_core' = state_core,
+      state_chain' = state_chain,
+      state_blockchain' = state_blockchain,
+      state_safrole' = state_safrole,
+      state_grandpa' = state_grandpa,
+      state_pvm' = state_pvm,
+      state_data_availability' = state_data_availability,
+      state_dispute' = {
+        ...state_dispute,
+        disputes: state_dispute.disputes.put(state_dispute.next_dispute_id, new_dispute),
+        next_dispute_id: state_dispute.next_dispute_id + 1
+      },
+      state_scheduling' = state_scheduling,
+      state_corechains' = state_corechains
+    }
+  }
+
+  // Vote on an open dispute (§12.2)
+  action vote_on_dispute(voter_index: int, dispute_id: int): bool = {
+    val voter_exists = state_safrole.validators.keys().contains(voter_index)
+    val dispute_exists = state_dispute.disputes.keys().contains(dispute_id)
+    val dispute = if (dispute_exists) state_dispute.disputes.get(dispute_id) else {
+      id: 0, dispute_type: SlashableOffense, target_validator_index: 0, evidence: "", status: DisputeRejected, initiated_by_index: 0, block_number: 0, resolution_votes: Set()
+    }
+    val can_vote = and {
+      voter_exists,
+      dispute_exists,
+      dispute.status == DisputeOpen,
+      not(dispute.resolution_votes.contains(voter_index)),
+      state_safrole.validators.get(voter_index).state == ValidatorActive
+    }
+    all {
+      can_vote,
+      state_basic' = state_basic,
+      state_core' = state_core,
+      state_chain' = state_chain,
+      state_blockchain' = state_blockchain,
+      state_safrole' = state_safrole,
+      state_grandpa' = state_grandpa,
+      state_pvm' = state_pvm,
+      state_data_availability' = state_data_availability,
+      state_dispute' = {
+        ...state_dispute,
+        disputes: state_dispute.disputes.setBy(dispute_id, d => { ...d, resolution_votes: d.resolution_votes.union(Set(voter_index)) })
+      },
+      state_scheduling' = state_scheduling,
+      state_corechains' = state_corechains
+    }
+  }
+
+  // Resolve a dispute and apply slashing (§12.3)
+  action resolve_dispute(dispute_id: int): bool = {
+    val dispute_exists = state_dispute.disputes.keys().contains(dispute_id)
+    val dispute = if (dispute_exists) state_dispute.disputes.get(dispute_id) else {
+      id: 0, dispute_type: SlashableOffense, target_validator_index: 0, evidence: "", status: DisputeRejected, initiated_by_index: 0, block_number: 0, resolution_votes: Set()
+    }
+    // Simple supermajority check: > 1/2 of validators for this model
+    val has_supermajority = dispute.resolution_votes.size() > state_safrole.validator_count / 2
+    val can_resolve = and {
+      dispute_exists,
+      dispute.status == DisputeOpen,
+      has_supermajority
+    }
+    
+    val target_idx = dispute.target_validator_index
+    val target_validator = state_safrole.validators.get(target_idx)
+    val slash_amount = target_validator.stake / 2 // Slash 50% for this example
+    
+    val slashing_event = {
+      validator_index: target_idx,
+      amount: slash_amount,
+      reason: dispute.dispute_type,
+      block_number: state_basic.current_block
+    }
+
+    all {
+      can_resolve,
+      state_basic' = state_basic,
+      state_core' = state_core,
+      state_chain' = state_chain,
+      state_blockchain' = state_blockchain,
+      state_safrole' = {
+        ...state_safrole,
+        validators: state_safrole.validators.setBy(target_idx, v => { ...v, stake: v.stake - slash_amount, state: Slashed })
+      },
+      state_grandpa' = state_grandpa,
+      state_pvm' = state_pvm,
+      state_data_availability' = state_data_availability,
+      state_dispute' = {
+        ...state_dispute,
+        disputes: state_dispute.disputes.setBy(dispute_id, d => { ...d, status: DisputeResolved }),
+        slashing_events: state_dispute.slashing_events.union(Set(slashing_event))
+      },
+      state_scheduling' = state_scheduling,
+      state_corechains' = state_corechains
+    }
+  }
+
   // Force slash validator (§10.3 Validator Slashing)
   action force_slash_validator(validator_index: int): bool = {
     val can_slash = state_safrole.validators.keys().contains(validator_index)
-    val updated_validator = if (can_slash) {
-      val validator = state_safrole.validators.get(validator_index)
-      { ...validator, state: Slashed }
-    } else {
-      state_safrole.validators.get(validator_index)
-    }
-
     all {
       can_slash,
       state_basic' = state_basic,
       state_core' = state_core,
       state_chain' = state_chain,
       state_blockchain' = state_blockchain,
-      state_safrole' = { ...state_safrole, validators: state_safrole.validators.put(validator_index, updated_validator) },
+      state_safrole' = { ...state_safrole, 
+        validators: state_safrole.validators.setBy(validator_index, v => { ...v, state: Slashed, stake: 0 })
+      },
       state_grandpa' = state_grandpa,
       state_pvm' = state_pvm,
       state_data_availability' = state_data_availability,
@@ -1329,33 +1652,105 @@ module confiture {
     }
   }
 
-
-  // Distribute block rewards to validators (§10.2 Reward Distribution)
-  action distribute_rewards(block_author: int, reward_amount: int): bool = {
-    val can_distribute = and {
-      state_safrole.validators.keys().contains(block_author),
-      state_safrole.validators.get(block_author).state == ValidatorActive,
-      reward_amount > 0,
-      state_basic.accounts.get("treasury") >= reward_amount  // Treasury must have sufficient funds
+  // Deploy a PVM program for a service (§8.3)
+  action deploy_pvm_program(service_id: int, gas_limit: int): bool = {
+    val service_exists = state_basic.services.keys().contains(service_id)
+    val program = {
+      service_id: service_id,
+      bytecode: "riscv_binary_data",
+      instructions: Map(
+        0 -> { opcode: Compute, operands: [1, 2, 3], gas_cost: 10 },
+        1 -> { opcode: Store, operands: [3, 100], gas_cost: 20 },
+        2 -> { opcode: Return, operands: [3], gas_cost: 5 }
+      ),
+      gas_limit: gas_limit,
+      memory_limit: PVM_MAX_MEMORY
     }
-
-    val updated_validator = if (can_distribute) {
-      val validator = state_safrole.validators.get(block_author)
-      { ...validator, stake: validator.stake + reward_amount }
-    } else {
-      state_safrole.validators.get(block_author)
-    }
-
     all {
-      can_distribute,
-      state_basic' = if (can_distribute) {
-        ...state_basic,
-        accounts: state_basic.accounts.setBy("treasury", balance => balance - reward_amount)
-      } else state_basic,
+      service_exists,
+      state_pvm' = {
+        ...state_pvm,
+        pvm_programs: state_pvm.pvm_programs.put(service_id, program)
+      },
+      state_basic' = state_basic,
       state_core' = state_core,
       state_chain' = state_chain,
       state_blockchain' = state_blockchain,
-      state_safrole' = { ...state_safrole, validators: state_safrole.validators.put(block_author, updated_validator) },
+      state_safrole' = state_safrole,
+      state_grandpa' = state_grandpa,
+      state_data_availability' = state_data_availability,
+      state_dispute' = state_dispute,
+      state_scheduling' = state_scheduling,
+      state_corechains' = state_corechains
+    }
+  }
+
+  // Execute a single instruction in a PVM context (§8.4)
+  action pvm_step(context_id: int): bool = {
+    val context_exists = state_pvm.pvm_contexts.keys().contains(context_id)
+    val ctx = if (context_exists) state_pvm.pvm_contexts.get(context_id) else {
+      pc: 0, registers: Map(), memory: Map(), gas_remaining: 0, execution_state: PvmFailed, return_data: "", service_id: 0
+    }
+    val program_exists = state_pvm.pvm_programs.keys().contains(ctx.service_id)
+    val program = state_pvm.pvm_programs.get(ctx.service_id)
+    val instr_exists = program.instructions.keys().contains(ctx.pc)
+    val instr = program.instructions.get(ctx.pc)
+    
+    val can_step = and {
+      context_exists,
+      program_exists,
+      ctx.execution_state == Running,
+      ctx.gas_remaining >= instr.gas_cost
+    }
+
+    val next_state = if (instr.opcode == Return) Completed else Running
+    val next_ctx = {
+      ...ctx,
+      pc: if (next_state == Running) ctx.pc + 1 else ctx.pc,
+      gas_remaining: ctx.gas_remaining - instr.gas_cost,
+      execution_state: next_state
+    }
+
+    all {
+      can_step,
+      state_pvm' = {
+        ...state_pvm,
+        pvm_contexts: state_pvm.pvm_contexts.put(context_id, next_ctx),
+        pvm_gas_used: state_pvm.pvm_gas_used + instr.gas_cost
+      },
+      state_basic' = state_basic,
+      state_core' = state_core,
+      state_chain' = state_chain,
+      state_blockchain' = state_blockchain,
+      state_safrole' = state_safrole,
+      state_grandpa' = state_grandpa,
+      state_data_availability' = state_data_availability,
+      state_dispute' = state_dispute,
+      state_scheduling' = state_scheduling,
+      state_corechains' = state_corechains
+    }
+  }
+
+  // Distribute block rewards to validators (§10.2 Reward Distribution)
+  action distribute_rewards(block_author_index: int, reward_amount: int): bool = {
+    val can_distribute = and {
+      state_safrole.validators.keys().contains(block_author_index),
+      state_safrole.validators.get(block_author_index).state == ValidatorActive,
+      reward_amount > 0,
+      state_basic.accounts.get("treasury") >= reward_amount
+    }
+    all {
+      can_distribute,
+      state_basic' = {
+        ...state_basic,
+        accounts: state_basic.accounts.setBy("treasury", balance => balance - reward_amount)
+      },
+      state_core' = state_core,
+      state_chain' = state_chain,
+      state_blockchain' = state_blockchain,
+      state_safrole' = { ...state_safrole,
+        validators: state_safrole.validators.setBy(block_author_index, v => { ...v, stake: v.stake + reward_amount })
+      },
       state_grandpa' = state_grandpa,
       state_pvm' = state_pvm,
       state_data_availability' = state_data_availability,
@@ -1369,202 +1764,259 @@ module confiture {
   // SYSTEM STEP - Broken down for better type checking
   // ============================================================================
 
+  action step_deploy_service = all {
+    nondet caller = state_basic.accounts.keys().oneOf()
+    deploy_service(caller, "code_hash", 1000, "refine_code", "accumulate_code", "on_message_code")
+  }
+
+  action step_submit_service_call = all {
+    state_basic.services.keys().size() > 0,
+    nondet caller = state_basic.accounts.keys().oneOf()
+    nondet service_id = state_basic.services.keys().oneOf()
+    nondet gas_limit = 1.to(100).oneOf()
+    nondet gas_price = 1.to(10).oneOf()
+    submit_service_call(caller, service_id, "call_data", gas_limit, gas_price)
+  }
+
+  action step_submit_work_package = all {
+    state_basic.services.keys().size() > 0,
+    nondet service_id = state_basic.services.keys().oneOf()
+    nondet gas_limit = 10.to(100).oneOf()
+    val work_item = {
+      id: state_chain.next_work_item_id,
+      service_id: service_id,
+      payload: "payload",
+      gas_limit: gas_limit,
+      status: WorkPending,
+      refine_output: "",
+      accumulate_input: ""
+    }
+    val work_items = Set(work_item)
+    submit_work_package(service_id, work_items, "auth_hash")
+  }
+
+  action step_register_validator = all {
+    nondet caller = state_basic.accounts.keys().oneOf()
+    register_validator("validator_key", MIN_VALIDATOR_STAKE)
+  }
+
+  action step_refine_work_package = all {
+    state_core.work_packages.keys().size() > 0,
+    nondet package_id = state_core.work_packages.keys().oneOf()
+    refine_work_package(package_id)
+  }
+
+  action step_accumulate_work_results = {
+    val available_results = state_core.work_results.keys().filter(id =>
+      state_core.work_results.get(id).success == true
+    )
+    all {
+      available_results.size() > 0,
+      nondet result_id = available_results.oneOf()
+      accumulate_work_results(Set(result_id))
+    }
+  }
+
+  action step_reserve_core = all {
+    state_basic.services.keys().size() > 0,
+    nondet service_id = state_basic.services.keys().oneOf()
+    nondet core_idx = CORE_INDICES.oneOf()
+    reserve_core(service_id, core_idx)
+  }
+
+  action step_confirm_availability = all {
+    state_core.work_packages.keys().size() > 0,
+    nondet package_id = state_core.work_packages.keys().oneOf()
+    confirm_availability(package_id)
+  }
+
+  action step_submit_extrinsic = all {
+    nondet caller = state_basic.accounts.keys().oneOf()
+    nondet extrinsic_type = Set(Transfer, ServiceCallExtrinsic, WorkPackageSubmission).oneOf()
+    submit_extrinsic(extrinsic_type, "extrinsic_data", caller)
+  }
+
+  action step_terminate_service = all {
+    state_basic.services.keys().size() > 0,
+    nondet caller = state_basic.accounts.keys().oneOf()
+    nondet service_id = state_basic.services.keys().oneOf()
+    terminate_service(service_id, caller)
+  }
+
+  action step_submit_ticket = all {
+    state_safrole.validators.keys().size() > 0,
+    nondet validator_index = state_safrole.validators.keys().oneOf()
+    nondet slot_number = Set(state_safrole.current_slot + 1, state_safrole.current_slot + 2).oneOf()
+    submit_ticket(validator_index, slot_number)
+  }
+
+  action step_submit_grandpa_vote = all {
+    state_safrole.validators.keys().size() > 0,
+    nondet voter_index = state_safrole.validators.keys().oneOf()
+    nondet vote_type = Set(Prevote, Precommit).oneOf()
+    nondet target_number = Set(0, state_blockchain.chain_head).oneOf()
+    submit_grandpa_vote(voter_index, vote_type, "block_hash", target_number)
+  }
+
+  action step_send_message = all {
+    state_basic.services.keys().size() >= 2,
+    nondet sender_id = state_basic.services.keys().oneOf()
+    nondet recipient_id = state_basic.services.keys().filter(id => id != sender_id).oneOf()
+    send_message(sender_id, recipient_id, "inter-service-payload", 100)
+  }
+
+  action process_messages: bool = {
+    val can_process = state_basic.message_queue.length() > 0
+    val msg = state_basic.message_queue.head()
+    val remaining = state_basic.message_queue.tail()
+    all {
+      can_process,
+      state_basic' = {
+        ...state_basic,
+        message_queue: remaining
+        // In real implementation, this would trigger on_message code
+      },
+      state_core' = state_core,
+      state_chain' = state_chain,
+      state_blockchain' = state_blockchain,
+      state_safrole' = state_safrole,
+      state_grandpa' = state_grandpa,
+      state_pvm' = state_pvm,
+      state_data_availability' = state_data_availability,
+      state_dispute' = state_dispute,
+      state_scheduling' = state_scheduling,
+      state_corechains' = state_corechains
+    }
+  }
+
+  action step_finalize_block = all {
+    state_blockchain.blocks.keys().size() > 1,
+    state_blockchain.chain_head > 0,
+    not(state_grandpa.finalized_blocks.contains(state_blockchain.chain_head)),
+    finalize_block("parent_hash", state_blockchain.chain_head)
+  }
+
+  action step_raise_dispute = all {
+    state_safrole.validator_count >= 2,
+    nondet reporter = state_safrole.validators.keys().oneOf()
+    nondet target = state_safrole.validators.keys().filter(v => v != reporter).oneOf()
+    nondet d_type = Set(InvalidWorkPackage, InvalidGuarantee, InvalidAssurance, SlashableOffense).oneOf()
+    raise_dispute(reporter, target, d_type)
+  }
+
+  action step_vote_on_dispute = all {
+    state_dispute.disputes.keys().size() > 0,
+    nondet dispute_id = state_dispute.disputes.keys().oneOf()
+    nondet voter = state_safrole.validators.keys().oneOf()
+    vote_on_dispute(voter, dispute_id)
+  }
+
+  action step_resolve_dispute = all {
+    state_dispute.disputes.keys().size() > 0,
+    nondet dispute_id = state_dispute.disputes.keys().oneOf()
+    resolve_dispute(dispute_id)
+  }
+
+  action step_distribute_rewards = all {
+    state_safrole.validators.keys().size() > 0,
+    nondet block_author = state_safrole.validators.keys().oneOf()
+    nondet reward = Set(BLOCK_REWARD, BLOCK_REWARD / 2).oneOf()
+    distribute_rewards(block_author, reward)
+  }
+
+  action step_deploy_pvm_program = all {
+    state_basic.services.keys().size() > 0,
+    nondet service_id = state_basic.services.keys().oneOf()
+    deploy_pvm_program(service_id, 10000)
+  }
+
+  action step_pvm_step = all {
+    state_pvm.pvm_contexts.keys().size() > 0,
+    nondet ctx_id = state_pvm.pvm_contexts.keys().oneOf()
+    pvm_step(ctx_id)
+  }
+
+  action step_complete_refinement = all {
+    state_pvm.pvm_contexts.keys().size() > 0,
+    nondet ctx_id = state_pvm.pvm_contexts.keys().oneOf()
+    nondet pkg_id = state_core.work_packages.keys().oneOf()
+    complete_refinement(pkg_id, ctx_id)
+  }
+
+  action step_consume_gas = any {
+    all {
+      state_pvm.pvm_gas_used + 100 <= MAX_GAS_PER_BLOCK,
+      state_basic.accounts.get("treasury") >= 100,
+      state_basic' = state_basic,
+      state_core' = state_core,
+      state_chain' = state_chain,
+      state_blockchain' = state_blockchain,
+      state_safrole' = state_safrole,
+      state_grandpa' = state_grandpa,
+      state_pvm' = { ...state_pvm, pvm_gas_used: state_pvm.pvm_gas_used + 100 },
+      state_data_availability' = state_data_availability,
+      state_dispute' = state_dispute,
+      state_scheduling' = state_scheduling,
+      state_corechains' = state_corechains
+    },
+    all {
+      state_pvm.pvm_gas_used + 500 <= MAX_GAS_PER_BLOCK,
+      state_basic.accounts.get("treasury") >= 500,
+      state_basic' = state_basic,
+      state_core' = state_core,
+      state_chain' = state_chain,
+      state_blockchain' = state_blockchain,
+      state_safrole' = state_safrole,
+      state_grandpa' = state_grandpa,
+      state_pvm' = { ...state_pvm, pvm_gas_used: state_pvm.pvm_gas_used + 500 },
+      state_data_availability' = state_data_availability,
+      state_dispute' = state_dispute,
+      state_scheduling' = state_scheduling,
+      state_corechains' = state_corechains
+    }
+  }
+
+  action step_noop = all {
+    state_basic' = state_basic,
+    state_core' = state_core,
+    state_chain' = state_chain,
+    state_blockchain' = state_blockchain,
+    state_safrole' = state_safrole,
+    state_grandpa' = state_grandpa,
+    state_pvm' = state_pvm,
+    state_data_availability' = state_data_availability,
+    state_dispute' = state_dispute,
+    state_scheduling' = state_scheduling,
+    state_corechains' = state_corechains
+  }
+
   // Main step action - complete logic restored
   action step: bool = any {
-    // Service deployment
-    all {
-      nondet caller = state_basic.accounts.keys().oneOf()
-      deploy_service(caller, "code_hash", 1000, "refine_code", "accumulate_code", "on_message_code")
-    },
-    // Legacy service call
-    all {
-      state_basic.services.keys().size() > 0,
-      nondet caller = state_basic.accounts.keys().oneOf()
-      nondet service_id = state_basic.services.keys().oneOf()
-      nondet gas_limit = 1.to(100).oneOf()
-      nondet gas_price = 1.to(10).oneOf()
-      submit_service_call(caller, service_id, "call_data", gas_limit, gas_price)
-    },
-    // Work package submission
-    all {
-      state_basic.services.keys().size() > 0,
-      nondet service_id = state_basic.services.keys().oneOf()
-      nondet gas_limit = 10.to(100).oneOf()
-      val work_item = {
-        id: state_chain.next_work_item_id,
-        service_id: service_id,
-        payload: "payload",
-        gas_limit: gas_limit,
-        status: WorkPending,
-        refine_output: "",
-        accumulate_input: ""
-      }
-      val work_items = Set(work_item)
-      submit_work_package(service_id, work_items, "auth_hash")
-    },
-    // Validator registration
-    all {
-      nondet caller = state_basic.accounts.keys().oneOf()
-      register_validator("validator_key", MIN_VALIDATOR_STAKE)
-    },
-    // Work package refinement
-    all {
-      state_core.work_packages.keys().size() > 0,
-      nondet package_id = state_core.work_packages.keys().oneOf()
-      refine_work_package(package_id)
-    },
-    // Work result accumulation
-    all {
-      val available_results = state_core.work_results.keys().filter(id =>
-        state_core.work_results.get(id).success == true
-      )
-      all {
-        available_results.size() > 0,
-        nondet result_id = available_results.oneOf()
-        accumulate_work_results(Set(result_id))
-      }
-    },
-    // Extrinsic submission
-    all {
-      nondet caller = state_basic.accounts.keys().oneOf()
-      nondet extrinsic_type = Set(Transfer, ServiceCallExtrinsic, WorkPackageSubmission).oneOf()
-      submit_extrinsic(extrinsic_type, "extrinsic_data", caller)
-    },
-    // Block production
+    step_deploy_service,
+    step_submit_service_call,
+    step_submit_work_package,
+    step_register_validator,
+    step_reserve_core,
+    step_refine_work_package,
+    step_confirm_availability,
+    step_accumulate_work_results,
+    step_submit_extrinsic,
     produce_block,
-    // Service termination
-    all {
-      state_basic.services.keys().size() > 0,
-      nondet caller = state_basic.accounts.keys().oneOf()
-      nondet service_id = state_basic.services.keys().oneOf()
-      terminate_service(service_id, caller)
-    },
-    // SAFROLE ticket submission
-    all {
-      state_safrole.validators.keys().size() > 0,
-      nondet validator_index = state_safrole.validators.keys().oneOf()
-      nondet slot_number = Set(state_safrole.current_slot + 1, state_safrole.current_slot + 2).oneOf()
-      submit_ticket(validator_index, slot_number)
-    },
-    // GRANDPA voting
-    all {
-      state_safrole.validators.keys().size() > 0,
-      nondet voter_index = state_safrole.validators.keys().oneOf()
-      nondet vote_type = Set(Prevote, Precommit).oneOf()
-      nondet target_number = Set(0, state_blockchain.chain_head).oneOf()
-      submit_grandpa_vote(voter_index, vote_type, "block_hash", target_number)
-    },
-    // Service state check (simplified)
-    all {
-      state_basic.services.keys().size() > 0,
-      nondet service_id = state_basic.services.keys().oneOf()
-      state_basic' = state_basic,
-      state_core' = state_core,
-      state_chain' = state_chain,
-      state_blockchain' = state_blockchain,
-      state_safrole' = state_safrole,
-      state_grandpa' = state_grandpa,
-      state_pvm' = state_pvm,
-      state_data_availability' = state_data_availability,
-      state_dispute' = state_dispute,
-      state_scheduling' = state_scheduling,
-      state_corechains' = state_corechains
-    },
-    // Block finalization
-    all {
-      state_blockchain.blocks.keys().size() > 1,
-      state_blockchain.chain_head > 0,
-      not(state_grandpa.finalized_blocks.contains(state_blockchain.chain_head)),
-      finalize_block("parent_hash", state_blockchain.chain_head)
-    },
-    // Additional validator registration
-    all {
-      nondet public_key = Set("validator1", "validator2", "validator3").oneOf()
-      nondet stake = Set(MIN_VALIDATOR_STAKE).oneOf()
-      register_validator(public_key, stake)
-    },
-    // Additional ticket submission
-    all {
-      state_safrole.validators.keys().size() > 0,
-      nondet validator_index = state_safrole.validators.keys().oneOf()
-      nondet slot_number = Set(state_safrole.current_slot + 1, state_safrole.current_slot + 2).oneOf()
-      submit_ticket(validator_index, slot_number)
-    },
-    // Additional GRANDPA voting
-    all {
-      state_safrole.validators.keys().size() > 0,
-      nondet voter_index = state_safrole.validators.keys().oneOf()
-      nondet vote_type = Set(Prevote, Precommit).oneOf()
-      nondet target_number = Set(0, state_blockchain.chain_head).oneOf()
-      submit_grandpa_vote(voter_index, vote_type, "block_hash", target_number)
-    },
-    // No-op actions
-    all {
-      state_basic' = state_basic,
-      state_core' = state_core,
-      state_chain' = state_chain,
-      state_blockchain' = state_blockchain,
-      state_safrole' = state_safrole,
-      state_grandpa' = state_grandpa,
-      state_pvm' = state_pvm,
-      state_data_availability' = state_data_availability,
-      state_dispute' = state_dispute,
-      state_scheduling' = state_scheduling,
-      state_corechains' = state_corechains
-    },
-    all {
-      state_basic' = state_basic,
-      state_core' = state_core,
-      state_chain' = state_chain,
-      state_blockchain' = state_blockchain,
-      state_safrole' = state_safrole,
-      state_grandpa' = state_grandpa,
-      state_pvm' = state_pvm,
-      state_data_availability' = state_data_availability,
-      state_dispute' = state_dispute,
-      state_scheduling' = state_scheduling,
-      state_corechains' = state_corechains
-    },
-    // Reward distribution
-    all {
-      state_safrole.validators.keys().size() > 0,
-      nondet block_author = state_safrole.validators.keys().oneOf()
-      nondet reward = Set(BLOCK_REWARD, BLOCK_REWARD / 2).oneOf()
-      distribute_rewards(block_author, reward)
-    },
-    // Gas charging for operations
-    any {
-      all {
-        state_pvm.pvm_gas_used + 100 <= MAX_GAS_PER_BLOCK,
-        state_basic.accounts.get("treasury") >= 100,
-        state_basic' = state_basic,
-        state_core' = state_core,
-        state_chain' = state_chain,
-        state_blockchain' = state_blockchain,
-        state_safrole' = state_safrole,
-        state_grandpa' = state_grandpa,
-        state_pvm' = { ...state_pvm, pvm_gas_used: state_pvm.pvm_gas_used + 100 },
-        state_data_availability' = state_data_availability,
-        state_dispute' = state_dispute,
-        state_scheduling' = state_scheduling,
-        state_corechains' = state_corechains
-      },
-      all {
-        state_pvm.pvm_gas_used + 500 <= MAX_GAS_PER_BLOCK,
-        state_basic.accounts.get("treasury") >= 500,
-        state_basic' = state_basic,
-        state_core' = state_core,
-        state_chain' = state_chain,
-        state_blockchain' = state_blockchain,
-        state_safrole' = state_safrole,
-        state_grandpa' = state_grandpa,
-        state_pvm' = { ...state_pvm, pvm_gas_used: state_pvm.pvm_gas_used + 500 },
-        state_data_availability' = state_data_availability,
-        state_dispute' = state_dispute,
-        state_scheduling' = state_scheduling,
-        state_corechains' = state_corechains
-      }
-    }
+    step_terminate_service,
+    step_submit_ticket,
+    step_submit_grandpa_vote,
+    step_send_message,
+    process_messages,
+    step_finalize_block,
+    step_raise_dispute,
+    step_vote_on_dispute,
+    step_resolve_dispute,
+    step_distribute_rewards,
+    step_deploy_pvm_program,
+    step_pvm_step,
+    step_complete_refinement,
+    step_consume_gas,
+    step_noop
   }
 
 }
