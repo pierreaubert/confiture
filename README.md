@@ -32,6 +32,6 @@ brew install quint
 ## [Sassafras](sassafras/README.md)
 ## [Elves](elves/README.md)
 ## [Beefy](beefy/README.md)
-## [Grandpa](granda/README.md)
+## [Grandpa](grandpa/README.md)
 ## [Jam](jam/README.md)
 
