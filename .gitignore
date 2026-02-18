@@ -10,4 +10,8 @@ node_modules
 CLAUDE.md
 AGENTS.md
 GEMINI.md
+.DS_Store
+
+# for now
+pusd
 
